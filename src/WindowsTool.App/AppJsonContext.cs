@@ -26,6 +26,8 @@ namespace WindowsTool.App;
 [JsonSerializable(typeof(SearchEventDto))]
 [JsonSerializable(typeof(ShellTargetRequest))]
 [JsonSerializable(typeof(CategoriesDto))]
+[JsonSerializable(typeof(SelectionDto))]
+[JsonSerializable(typeof(SelectionRequest))]
 [JsonSerializable(typeof(RuleRequest))]
 [JsonSerializable(typeof(EnabledRequest))]
 [JsonSerializable(typeof(RuleInfoDto))]

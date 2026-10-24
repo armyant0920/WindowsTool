@@ -55,15 +55,47 @@ public sealed record ScanItemDto(
     Classification? Classification,
     bool Selectable,
     bool AutoSelected,
-    bool ContainsProtected);
+    bool ContainsProtected,
+    bool Selected,
+    bool Done);
 
 public sealed record OtherFilesDto(int Count, long Size);
 
+/// <param name="SelectableInView">符合目前條件、可以勾選的項目數（給表頭的全選使用）。</param>
+/// <param name="SelectedInView">符合目前條件、已經勾選的項目數。</param>
 public sealed record ItemPageDto(
     ScanItemDto? Parent,
     IReadOnlyList<ScanItemDto> Items,
     int Total,
-    OtherFilesDto? OtherFiles);
+    OtherFilesDto? OtherFiles,
+    int SelectableInView,
+    int SelectedInView,
+    long SizeInView);
+
+/// <summary>勾選的統計，只算最上層（資料夾裡被勾選的項目已經包含在資料夾中）。</summary>
+/// <param name="SuggestedCount">規則建議清理（預設勾選）的項目數。</param>
+/// <param name="SuggestedRemaining">建議清理、但還沒有勾選的項目數。</param>
+public sealed record SelectionDto(int Count, long Size, int SuggestedCount, long SuggestedSize, int SuggestedRemaining, long SuggestedRemainingSize);
+
+/// <summary>
+/// 修改勾選：<c>action</c> = <c>add</c> / <c>remove</c> / <c>clear</c> / <c>suggested</c>（勾選所有建議清理的項目）。
+/// <c>ids</c> 指定項目；<c>filter</c> 指定條件（和清單查詢相同），代表「目前條件下的所有項目」。
+/// </summary>
+public sealed record SelectionRequest(string? Action, IReadOnlyList<int>? Ids = null, ItemsFilterDto? Filter = null);
+
+public sealed record ItemsFilterDto(
+    int? ParentId = null,
+    bool? Flat = null,
+    string? Kind = null,
+    long? MinSize = null,
+    string? Q = null,
+    string? Ext = null,
+    int? OlderThanDays = null,
+    string? Risk = null,
+    string? Category = null,
+    string? Source = null,
+    bool? TopLevel = null,
+    bool? Selected = null);
 
 public sealed record ExtStatDto(string Ext, int Count, long Size);
 
@@ -124,8 +156,10 @@ public static class ScanDtoMapper
             session.Error);
     }
 
-    public static ScanItemDto ToDto(this ScanNode node, RuleEvaluation? evaluation)
+    public static ScanItemDto ToDto(this ScanNode node, RuleEvaluation? evaluation, ScanSelection? selection = null)
     {
+        var done = selection?.IsDone(node) ?? false;
+        var selectable = (evaluation?.IsSelectable(node.Id) ?? true) && !done;
         var dir = node as DirNode;
         return new ScanItemDto(
             node.Id,
@@ -147,9 +181,11 @@ public static class ScanDtoMapper
             dir?.DeniedCount ?? 0,
             dir?.HasChildren ?? false,
             evaluation?.Get(node.Id),
-            evaluation?.IsSelectable(node.Id) ?? true,
+            selectable,
             evaluation?.IsAutoSelected(node.Id) ?? false,
-            evaluation?.ContainsProtected(node.Id) ?? false);
+            evaluation?.ContainsProtected(node.Id) ?? false,
+            selectable && (selection?.IsSelected(node.Id) ?? false),
+            done);
     }
 
     public static OtherFilesDto? OtherFiles(this DirNode dir) =>

@@ -31,7 +31,7 @@ export const PlanView = {
   name: 'PlanView',
   props: {
     scanId: { type: String, required: true },
-    selection: { type: Object, required: true }, // { useAutoSelect, include, exclude, count, size }
+    selection: { type: Object, required: true }, // { count, size }：建立計畫時使用掃描結果頁上的勾選
   },
   emits: ['close', 'executed', 'rescan'],
   setup(props, { emit }) {
@@ -76,9 +76,7 @@ export const PlanView = {
       try {
         const body = {
           scanId: props.scanId,
-          useAutoSelect: props.selection.useAutoSelect,
-          include: props.selection.include,
-          exclude: props.selection.exclude,
+          useSelection: true,
           action: mode.value,
           destination: mode.value === 'move' ? destination.value.trim() : null,
         };
@@ -180,7 +178,7 @@ export const PlanView = {
       <!-- 1. 選擇動作 -->
       <template v-if="step === 'choose'">
         <p class="muted" style="margin-top:0">
-          勾選了約 {{ formatNumber(selection.count) }} 項（約 {{ formatBytes(selection.size) }}）。
+          已勾選 {{ formatNumber(selection.count) }} 項（{{ formatBytes(selection.size) }}）。
           先產生預覽：會重新檢查每一項（是否還存在、是否受保護、是否正在使用中），<strong>這一步不會動到任何檔案</strong>。
         </p>
         <div class="mode-list" role="radiogroup" aria-label="動作">

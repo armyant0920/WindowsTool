@@ -23,7 +23,14 @@ public readonly record struct ItemsQueryParameters(
     int? Limit,
     string? Risk,
     string? Category,
-    string? Source);
+    string? Source,
+    bool? TopLevel,
+    bool? Selected)
+{
+    public static ItemsQueryParameters From(ItemsFilterDto f) => new(
+        f.ParentId, f.Flat, f.Kind, f.MinSize, f.Q, f.Ext, f.OlderThanDays, null, null, null, null,
+        f.Risk, f.Category, f.Source, f.TopLevel, f.Selected);
+}
 
 public static class ScanEndpoints
 {
@@ -39,6 +46,8 @@ public static class ScanEndpoints
         scans.MapGet("/{id}/items", Items);
         scans.MapGet("/{id}/items/{itemId:int}", Item);
         scans.MapGet("/{id}/categories", Categories);
+        scans.MapGet("/{id}/selection", GetSelection);
+        scans.MapPost("/{id}/selection", ChangeSelection);
         return app;
     }
 
@@ -113,7 +122,7 @@ public static class ScanEndpoints
         }
 
         var evaluation = session.GetEvaluation(rules.Current);
-        if (!TryBuildQuery(p, evaluation, out var query, out var error))
+        if (!TryBuildQuery(p, evaluation, session.Selection, out var query, out var error))
         {
             return TypedResults.BadRequest(new ErrorResponse(error));
         }
@@ -122,11 +131,15 @@ public static class ScanEndpoints
         {
             var page = ScanQuery.Run(result, query, DateTime.UtcNow);
             var parent = query.ParentId is { } parentId ? result.Find(parentId) as DirNode : result.Root;
+            var selectable = page.Matched.Where(n => evaluation?.IsSelectable(n.Id) ?? true).Where(n => !session.Selection.IsDone(n)).ToList();
             return TypedResults.Ok(new ItemPageDto(
-                parent?.ToDto(evaluation),
-                [.. page.Items.Select(i => i.ToDto(evaluation))],
+                parent?.ToDto(evaluation, session.Selection),
+                [.. page.Items.Select(i => i.ToDto(evaluation, session.Selection))],
                 page.Total,
-                query.Flat ? null : parent?.OtherFiles()));
+                query.Flat ? null : parent?.OtherFiles(),
+                selectable.Count,
+                selectable.Count(n => session.Selection.IsSelected(n.Id)),
+                ScanSelection.Summarize(page.Matched.ToList()).Size));
         }
         catch (KeyNotFoundException ex)
         {
@@ -165,7 +178,7 @@ public static class ScanEndpoints
             .OrderBy(h => h.Role)
             .ToList();
 
-        return TypedResults.Ok(new ItemDetailDto(node.ToDto(evaluation), ancestors, extStats, dir?.OtherFiles(), hits));
+        return TypedResults.Ok(new ItemDetailDto(node.ToDto(evaluation, session.Selection), ancestors, extStats, dir?.OtherFiles(), hits));
     }
 
     private static Results<Ok<CategoriesDto>, NotFound<ErrorResponse>, Conflict<ErrorResponse>> Categories(
@@ -211,7 +224,85 @@ public static class ScanEndpoints
         return true;
     }
 
-    private static bool TryBuildQuery(ItemsQueryParameters p, RuleEvaluation? evaluation, out ItemQuery query, out string error)
+    private static Results<Ok<SelectionDto>, NotFound<ErrorResponse>, Conflict<ErrorResponse>> GetSelection(
+        string id, ScanManager manager, RuleStore rules)
+    {
+        if (!TryGetResult(id, manager, out var session, out var result, out var notFound, out var conflict))
+        {
+            return notFound is not null ? notFound : conflict!;
+        }
+
+        return TypedResults.Ok(SelectionSummary(session, result, session.GetEvaluation(rules.Current)));
+    }
+
+    /// <summary>勾選 / 取消：指定項目，或「目前條件下的所有項目」。受保護、已處理的項目一律不會被勾選。</summary>
+    private static Results<Ok<SelectionDto>, NotFound<ErrorResponse>, Conflict<ErrorResponse>, BadRequest<ErrorResponse>> ChangeSelection(
+        string id, SelectionRequest request, ScanManager manager, RuleStore rules)
+    {
+        if (!TryGetResult(id, manager, out var session, out var result, out var notFound, out var conflict))
+        {
+            return notFound is not null ? notFound : conflict!;
+        }
+
+        var evaluation = session.GetEvaluation(rules.Current);
+        var selection = session.Selection;
+        IEnumerable<ScanNode> targets = [];
+
+        if (request.Ids is { Count: > 0 } ids)
+        {
+            targets = ids.Select(result.Find).OfType<ScanNode>();
+        }
+        else if (request.Filter is { } filter)
+        {
+            if (!TryBuildQuery(ItemsQueryParameters.From(filter), evaluation, selection, out var query, out var error))
+            {
+                return TypedResults.BadRequest(new ErrorResponse(error));
+            }
+
+            try
+            {
+                targets = ScanQuery.Run(result, query with { Offset = 0, Limit = 1 }, DateTime.UtcNow).Matched;
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return TypedResults.NotFound(new ErrorResponse(ex.Message));
+            }
+        }
+
+        var allowed = targets.Where(n => (evaluation?.IsSelectable(n.Id) ?? true) && !selection.IsDone(n)).Select(n => n.Id).ToList();
+        switch (request.Action?.ToLowerInvariant())
+        {
+            case "add":
+                selection.Add(allowed);
+                break;
+            case "remove":
+                selection.Remove(targets.Select(n => n.Id));
+                break;
+            case "clear":
+                selection.Clear();
+                break;
+            case "suggested":
+                selection.Add(selection.Suggested(result, evaluation).Select(n => n.Id));
+                break;
+            default:
+                return TypedResults.BadRequest(new ErrorResponse($"不支援的動作：{request.Action}（可以是 add、remove、clear、suggested）"));
+        }
+
+        return TypedResults.Ok(SelectionSummary(session, result, evaluation));
+    }
+
+    private static SelectionDto SelectionSummary(ScanSession session, ScanResult result, RuleEvaluation? evaluation)
+    {
+        var (count, size) = ScanSelection.Summarize(session.Selection.Effective(result, evaluation));
+        var suggested = session.Selection.Suggested(result, evaluation);
+        var (suggestedCount, suggestedSize) = ScanSelection.Summarize(suggested);
+        var (remaining, remainingSize) = ScanSelection.Summarize(
+            [.. suggested.Where(n => !session.Selection.IsSelected(n.Id) && !session.Selection.HasSelectedAncestor(n))]);
+        return new SelectionDto(count, size, suggestedCount, suggestedSize, remaining, remainingSize);
+    }
+
+    private static bool TryBuildQuery(
+        ItemsQueryParameters p, RuleEvaluation? evaluation, ScanSelection selection, out ItemQuery query, out string error)
     {
         query = null!;
         error = "";
@@ -246,7 +337,7 @@ public static class ScanEndpoints
             default: error = $"不支援的 order：{p.Order}"; return false;
         }
 
-        if (!TryBuildRuleFilter(p, evaluation, out var where, out error))
+        if (!TryBuildRuleFilter(p, evaluation, selection, out var where, out error))
         {
             return false;
         }
@@ -274,7 +365,7 @@ public static class ScanEndpoints
 
     /// <summary>依規則標註篩選：risk（可多選，unknown = 未分類）、category、source（none = 未分類）。</summary>
     private static bool TryBuildRuleFilter(
-        ItemsQueryParameters p, RuleEvaluation? evaluation, out Func<ScanNode, bool>? where, out string error)
+        ItemsQueryParameters p, RuleEvaluation? evaluation, ScanSelection selection, out Func<ScanNode, bool>? where, out string error)
     {
         where = null;
         error = "";
@@ -317,14 +408,28 @@ public static class ScanEndpoints
         }
 
         var category = string.IsNullOrWhiteSpace(p.Category) ? null : p.Category.Trim();
-        if (risks is null && source is null && !unclassifiedOnly && category is null)
+        var topLevel = p.TopLevel ?? false;
+        var selectedOnly = p.Selected ?? false;
+        if (risks is null && source is null && !unclassifiedOnly && category is null && !topLevel && !selectedOnly)
         {
             return true;
         }
 
         where = node =>
         {
+            // 只看已勾選：只列最上層（資料夾裡的項目已經包含在資料夾中，和勾選統計的數字一致）
+            if (selectedOnly && (!selection.IsSelected(node.Id) || !(evaluation?.IsSelectable(node.Id) ?? true) || selection.IsDone(node)
+                                 || selection.HasSelectedAncestor(node)))
+            {
+                return false;
+            }
+
             var c = evaluation?.Get(node.Id);
+            if (topLevel && (c is null || HasAncestorWithCategory(node, c.Category, evaluation!)))
+            {
+                return false;
+            }
+
             if (risks is not null && !risks.Contains(c?.Risk ?? RiskLevel.Unknown))
             {
                 return false;
@@ -343,5 +448,19 @@ public static class ScanEndpoints
             return category is null || c?.Category == category;
         };
         return true;
+    }
+
+    /// <summary>上層是否已經是同一個類別（和類別統計相同：同類別只算最上層）。</summary>
+    private static bool HasAncestorWithCategory(ScanNode node, string category, RuleEvaluation evaluation)
+    {
+        for (var parent = node.Parent; parent is not null; parent = parent.Parent)
+        {
+            if (evaluation.Get(parent.Id)?.Category == category)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

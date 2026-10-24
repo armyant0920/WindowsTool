@@ -49,7 +49,8 @@ public sealed record ItemQuery
     public int Limit { get; init; } = 200;
 }
 
-public sealed record ItemPage(IReadOnlyList<ScanNode> Items, int Total);
+/// <param name="Matched">所有符合條件的項目（未分頁），給「全選」與勾選統計使用。</param>
+public sealed record ItemPage(IReadOnlyList<ScanNode> Items, int Total, IReadOnlyList<ScanNode> Matched);
 
 public static class ScanQuery
 {
@@ -79,7 +80,7 @@ public static class ScanQuery
         var limit = Math.Clamp(query.Limit, 1, MaxLimit);
         var offset = Math.Max(0, query.Offset);
         var items = Sort(matched, query.Sort, query.Descending).Skip(offset).Take(limit).ToList();
-        return new ItemPage(items, matched.Count);
+        return new ItemPage(items, matched.Count, matched);
     }
 
     private static IEnumerable<ScanNode> Children(DirNode dir) => dir.Dirs.Cast<ScanNode>().Concat(dir.Files);

@@ -51,6 +51,9 @@ public sealed class ScanSession : IBackgroundSession
 
     public ScanProgress Progress { get; } = new();
 
+    /// <summary>使用者勾選的項目與已經處理過的項目。</summary>
+    public ScanSelection Selection { get; } = new();
+
     private volatile ScanStatus _status = ScanStatus.Running;
 
     /// <summary>volatile：背景執行緒先寫入 Result / Error 再更新狀態，讀取端看到結束狀態時一定也看得到結果。</summary>

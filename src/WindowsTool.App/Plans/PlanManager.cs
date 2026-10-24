@@ -61,7 +61,7 @@ public sealed class PlanExecution : IDisposable
 
     public bool IsRunning => _status == "running";
 
-    public void Start(PlanEnvironment environment, ActionLog log, string? confirmation)
+    public void Start(PlanEnvironment environment, ActionLog log, string? confirmation, Action<IReadOnlyList<ItemResult>>? onCompleted = null)
     {
         Completion = Task.Run(async () =>
         {
@@ -74,6 +74,8 @@ public sealed class PlanExecution : IDisposable
                 {
                     _results.AddRange(results);
                 }
+
+                onCompleted?.Invoke(results);
 
                 final = _cts.IsCancellationRequested ? "cancelled" : "completed";
             }
@@ -195,7 +197,11 @@ public sealed class PlanManager(
 
         var evaluation = session.GetEvaluation(rules.Current)!;
         var ids = new HashSet<int>();
-        if (request.UseAutoSelect ?? true)
+        if (request.UseSelection ?? false)
+        {
+            ids.UnionWith(session.Selection.Effective(result, evaluation).Select(n => n.Id));
+        }
+        else if (request.UseAutoSelect ?? true)
         {
             foreach (var node in result.Items)
             {
@@ -206,14 +212,17 @@ public sealed class PlanManager(
             }
         }
 
-        foreach (var id in request.Include ?? [])
+        if (!(request.UseSelection ?? false))
         {
-            ids.Add(id);
-        }
+            foreach (var id in request.Include ?? [])
+            {
+                ids.Add(id);
+            }
 
-        foreach (var id in request.Exclude ?? [])
-        {
-            ids.Remove(id);
+            foreach (var id in request.Exclude ?? [])
+            {
+                ids.Remove(id);
+            }
         }
 
         if (ids.Count == 0)
@@ -286,7 +295,16 @@ public sealed class PlanManager(
 
             var execution = new PlanExecution(entry.Plan);
             _plans[id] = (entry.Plan, execution);
-            execution.Start(CreateEnvironment(), log, confirmation);
+            var plan = entry.Plan;
+            execution.Start(CreateEnvironment(), log, confirmation, results =>
+            {
+                // 處理過的項目從勾選中移除，並在掃描結果中標示
+                if (plan.ScanId is not null && scans.Get(plan.ScanId) is { } scan)
+                {
+                    var ok = results.Where(r => r.Outcome == ActionOutcome.Ok).Select(r => r.Index).ToHashSet();
+                    scan.Selection.MarkDone(plan.Items.Where(i => ok.Contains(i.Index) && i.ItemId is not null).Select(i => i.ItemId!.Value));
+                }
+            });
             return execution;
         }
     }
