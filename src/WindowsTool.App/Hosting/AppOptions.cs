@@ -15,4 +15,7 @@ public sealed class AppOptions
 
     /// <summary>固定的 session token，只在 Development 環境有效，正式環境一律忽略。</summary>
     public string? DevToken { get; set; }
+
+    /// <summary>資料存放位置（規則、設定）。省略時依可攜模式或使用者設定資料夾決定（PLAN 6.1）。</summary>
+    public string? DataDirectory { get; set; }
 }

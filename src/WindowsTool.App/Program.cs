@@ -6,6 +6,8 @@ using WindowsTool.App.Scans;
 using WindowsTool.App.Search;
 using WindowsTool.App.Shell;
 using WindowsTool.App.Security;
+using WindowsTool.Core.Rules;
+using WindowsTool.Core.Storage;
 
 var cli = CommandLineOptions.Parse(args);
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = cli.RemainingArgs });
@@ -21,6 +23,9 @@ builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, o
 
 var token = SessionToken.Create(builder.Environment.IsDevelopment(), options.DevToken);
 builder.Services.AddSingleton(new LocalServerState(token, options.Port));
+var paths = AppPaths.Resolve(options.DataDirectory, AppContext.BaseDirectory);
+builder.Services.AddSingleton(paths);
+builder.Services.AddSingleton(_ => new RuleStore(paths.UserRulesFile, BuiltinRules.All, PathTokens.FromEnvironment()));
 builder.Services.AddSingleton<ScanManager>();
 builder.Services.AddSingleton<SearchManager>();
 builder.Services.AddSingleton<IShellLauncher, ShellLauncher>();
@@ -39,6 +44,7 @@ app.MapSystemEndpoints();
 app.MapScanEndpoints();
 app.MapSearchEndpoints();
 app.MapShellEndpoints();
+app.MapRuleEndpoints();
 
 app.Lifetime.ApplicationStarted.Register(() => StartupAnnouncer.OnStarted(app, options));
 

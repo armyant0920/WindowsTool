@@ -14,11 +14,31 @@ public sealed class AppFactory : WebApplicationFactory<Program>
 
     public string Token => Services.GetRequiredService<LocalServerState>().Token;
 
+    /// <summary>每個 factory 一個暫存的資料夾，測試不會寫到使用者真正的設定資料夾。</summary>
+    public string DataDirectory { get; } = Path.Combine(Path.GetTempPath(), "WindowsTool.Tests", "data-" + Guid.NewGuid().ToString("N"));
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");
         builder.UseSetting("WindowsTool:Port", TestPort.ToString(System.Globalization.CultureInfo.InvariantCulture));
         builder.UseSetting("WindowsTool:OpenBrowser", "false");
+        builder.UseSetting("WindowsTool:DataDirectory", DataDirectory);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        try
+        {
+            if (Directory.Exists(DataDirectory))
+            {
+                Directory.Delete(DataDirectory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // 暫存資料夾刪不掉不影響結果
+        }
     }
 
     /// <summary>建立 Host header 為 127.0.0.1:5179 的 client。</summary>

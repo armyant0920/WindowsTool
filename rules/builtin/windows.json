@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "protect-windows",
+      "name": "Windows 系統資料夾",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["windows"],
+      "match": {
+        "pathGlob": ["{Windows}"],
+        "excludeGlob": ["{Windows}/Temp/**", "{Windows}/SoftwareDistribution/Download/**", "{Windows}/Minidump/**"]
+      },
+      "result": { "category": "Windows 系統", "reason": "作業系統檔案，刪除可能導致系統無法開機。Temp、Windows Update 下載快取、Minidump 另有分類規則。" }
+    },
+    {
+      "id": "protect-winsxs",
+      "name": "WinSxS 元件存放區",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{Windows}/WinSxS"] },
+      "result": {
+        "category": "Windows 系統",
+        "reason": "大量使用 hardlink，顯示的大小會重複計算；只能用 DISM（dism-component-cleanup）清理，不可直接刪除。"
+      }
+    },
+    {
+      "id": "protect-windows-installer",
+      "name": "Windows Installer 快取",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{Windows}/Installer"] },
+      "result": { "category": "Windows 系統", "reason": "已安裝程式的修復與解除安裝資料，刪除後程式可能無法更新或移除。" }
+    },
+    {
+      "id": "protect-program-files",
+      "name": "Program Files",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{ProgramFiles}", "{ProgramFiles(x86)}"] },
+      "result": { "category": "已安裝的程式", "reason": "請從「設定 → 應用程式」解除安裝，不要直接刪除程式資料夾。" }
+    },
+    {
+      "id": "protect-system-files",
+      "name": "分頁檔與休眠檔",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["windows"],
+      "match": { "kind": "file", "pathGlob": ["?:/pagefile.sys", "?:/hiberfil.sys", "?:/swapfile.sys"] },
+      "result": { "category": "系統檔案", "reason": "由 Windows 管理；要縮小請到系統設定調整虛擬記憶體，或執行 powercfg /h off 關閉休眠。" }
+    },
+    {
+      "id": "protect-system-volume",
+      "name": "系統還原與資源回收筒",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["?:/System Volume Information", "?:/$Recycle.Bin", "?:/Recovery"] },
+      "result": { "category": "系統檔案", "reason": "系統還原點、資源回收筒與修復環境，請用 Windows 內建的工具管理。" }
+    },
+    {
+      "id": "protect-boot",
+      "name": "開機檔案",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{SystemDrive}/Boot", "{SystemDrive}/bootmgr", "{SystemDrive}/BOOTNXT", "{SystemDrive}/EFI"] },
+      "result": { "category": "系統檔案", "reason": "開機管理程式需要的檔案。" }
+    },
+    {
+      "id": "caution-user-folders",
+      "name": "個人資料夾",
+      "source": "builtin",
+      "kind": "caution",
+      "platforms": ["windows", "linux", "macos"],
+      "match": { "pathGlob": ["{Documents}", "{Desktop}", "{Pictures}", "{Videos}", "{Music}"] },
+      "result": { "category": "個人檔案", "risk": "high", "reason": "文件、桌面、圖片、影片、音樂通常是無法重建的個人資料，請逐一確認。" }
+    },
+    {
+      "id": "win-temp-user",
+      "name": "使用者暫存檔",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{LocalAppData}/Temp/**"], "minAgeDays": 2 },
+      "result": {
+        "category": "暫存檔",
+        "risk": "low",
+        "suggestedAction": "recycle",
+        "reason": "使用者暫存資料夾中 2 天以上沒有異動的項目，關閉應用程式後可以安全清除；正在使用中的檔案會略過。",
+        "autoSelect": true
+      }
+    },
+    {
+      "id": "win-temp-sys",
+      "name": "系統暫存檔",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{Windows}/Temp/**"], "minAgeDays": 2 },
+      "result": {
+        "category": "系統暫存",
+        "risk": "low",
+        "suggestedAction": "recycle",
+        "reason": "Windows 暫存資料夾中 2 天以上沒有異動的項目；大多需要系統管理員權限才能刪除。"
+      }
+    },
+    {
+      "id": "win-wu-download",
+      "name": "Windows Update 下載快取",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{Windows}/SoftwareDistribution/Download/**"] },
+      "result": {
+        "category": "Windows Update 下載快取",
+        "risk": "medium",
+        "suggestedAction": "review",
+        "reason": "已下載的更新套件。更新安裝完成後通常可以清除，但更新進行中刪除會導致重新下載；建議用「磁碟清理」處理。"
+      }
+    },
+    {
+      "id": "win-crashdumps",
+      "name": "當機傾印",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{LocalAppData}/CrashDumps/**", "{Windows}/Minidump/**", "**/*.dmp"] },
+      "result": {
+        "category": "當機傾印",
+        "risk": "low",
+        "suggestedAction": "recycle",
+        "reason": "程式或系統當機時產生的記錄，除非正在排查問題，否則可以刪除。"
+      }
+    },
+    {
+      "id": "browser-cache",
+      "name": "瀏覽器快取",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": {
+        "kind": "dir",
+        "pathGlob": [
+          "{LocalAppData}/Google/Chrome/User Data/*/Cache",
+          "{LocalAppData}/Google/Chrome/User Data/*/Code Cache",
+          "{LocalAppData}/Google/Chrome/User Data/*/GPUCache",
+          "{LocalAppData}/Microsoft/Edge/User Data/*/Cache",
+          "{LocalAppData}/Microsoft/Edge/User Data/*/Code Cache",
+          "{LocalAppData}/Microsoft/Edge/User Data/*/GPUCache"
+        ]
+      },
+      "result": {
+        "category": "瀏覽器快取",
+        "risk": "low",
+        "suggestedAction": "recycle",
+        "reason": "Chrome / Edge 的網頁快取，刪除後會重新下載。請先關閉瀏覽器。"
+      }
+    },
+    {
+      "id": "dev-nuget",
+      "name": "NuGet 快取",
+      "source": "builtin",
+      "match": { "kind": "dir", "pathGlob": ["{UserProfile}/.nuget/packages"] },
+      "result": {
+        "category": "套件快取",
+        "risk": "low",
+        "suggestedAction": "command",
+        "method": "nuget-clear",
+        "reason": "NuGet 下載過的套件，需要時會自動重新下載。建議用 dotnet nuget locals all --clear 清除。"
+      }
+    },
+    {
+      "id": "dev-npm-cache",
+      "name": "npm 快取",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "kind": "dir", "pathGlob": ["{LocalAppData}/npm-cache"] },
+      "result": {
+        "category": "套件快取",
+        "risk": "low",
+        "suggestedAction": "command",
+        "method": "npm-cache-clean",
+        "reason": "npm 下載過的套件，需要時會自動重新下載。建議用 npm cache clean --force 清除。"
+      }
+    },
+    {
+      "id": "dev-pip-cache",
+      "name": "pip 快取",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "kind": "dir", "pathGlob": ["{LocalAppData}/pip/Cache"] },
+      "result": {
+        "category": "套件快取",
+        "risk": "low",
+        "suggestedAction": "command",
+        "method": "pip-cache-purge",
+        "reason": "pip 下載過的套件，需要時會自動重新下載。建議用 pip cache purge 清除。"
+      }
+    },
+    {
+      "id": "docker-vhdx",
+      "name": "Docker / WSL 虛擬磁碟",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "kind": "file", "pathGlob": ["**/docker_data.vhdx", "**/ext4.vhdx"] },
+      "result": {
+        "category": "Docker / WSL 磁碟映像",
+        "risk": "high",
+        "suggestedAction": "review",
+        "reason": "Docker 或 WSL 發行版的整顆虛擬磁碟，刪除會遺失裡面所有的容器、映像與資料。可以先執行 docker system prune，再依指引壓縮（wsl-compact）。"
+      }
+    },
+    {
+      "id": "win-installer-cache",
+      "name": "安裝程式快取",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{ProgramData}/Package Cache", "{ProgramData}/Package Cache/**"] },
+      "result": {
+        "category": "安裝程式快取",
+        "risk": "high",
+        "suggestedAction": "keep",
+        "reason": "Visual Studio 等程式的安裝套件快取，刪除後可能無法修復、更新或解除安裝。"
+      }
+    },
+    {
+      "id": "downloads-old",
+      "name": "舊的下載檔",
+      "source": "builtin",
+      "platforms": ["windows"],
+      "match": { "pathGlob": ["{UserProfile}/Downloads/**"], "minAgeDays": 180 },
+      "result": {
+        "category": "舊下載檔",
+        "risk": "medium",
+        "suggestedAction": "review",
+        "reason": "下載資料夾中半年以上沒有異動的項目，請確認是否還需要。"
+      }
+    }
+  ]
+}

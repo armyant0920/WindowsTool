@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "protect-unix-system",
+      "name": "系統資料夾",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["linux", "macos"],
+      "match": {
+        "pathGlob": ["/bin", "/sbin", "/usr", "/etc", "/boot", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/sys", "/dev"]
+      },
+      "result": { "category": "作業系統", "reason": "作業系統檔案，刪除可能導致系統無法使用。" }
+    },
+    {
+      "id": "protect-macos-system",
+      "name": "macOS 系統層",
+      "source": "builtin",
+      "kind": "protect",
+      "platforms": ["macos"],
+      "match": { "pathGlob": ["/System", "/Library", "/private/var/vm"] },
+      "result": { "category": "作業系統", "reason": "macOS 系統檔案。" }
+    }
+  ]
+}

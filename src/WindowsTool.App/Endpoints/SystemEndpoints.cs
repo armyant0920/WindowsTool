@@ -1,9 +1,10 @@
 using System.Reflection;
 using WindowsTool.Core.Platform;
+using WindowsTool.Core.Storage;
 
 namespace WindowsTool.App.Endpoints;
 
-public sealed record SystemInfoResponse(string Name, string Version, SystemInfo System);
+public sealed record SystemInfoResponse(string Name, string Version, SystemInfo System, string DataDirectory, bool Portable);
 
 public static class SystemEndpoints
 {
@@ -11,8 +12,8 @@ public static class SystemEndpoints
 
     public static IEndpointRouteBuilder MapSystemEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/system/info", () =>
-            TypedResults.Ok(new SystemInfoResponse("WindowsTool", AppVersion, SystemInfoProvider.Collect())));
+        app.MapGet("/api/system/info", (AppPaths paths) =>
+            TypedResults.Ok(new SystemInfoResponse("WindowsTool", AppVersion, SystemInfoProvider.Collect(), paths.DataDirectory, paths.IsPortable)));
 
         return app;
     }

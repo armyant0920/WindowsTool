@@ -303,6 +303,22 @@ WindowsTool/
 5. `suggestedAction = command` 的規則只能引用**白名單 commandId**（見 10.3），不能夾帶任意命令字串。
 6. AI 提案的 `scope` 預設是 `location`，要改成 `global` 必須由使用者明確選擇。
 
+### 8.5 Phase 2 實作決策（2026-10-25）
+完整的欄位說明與範例見 `docs/rule-schema.md`。
+
+- **第三種規則 `kind = caution`（提醒）**：13 節要求「文件 / 桌面…不保護，但風險至少 high、autoSelect = false」，原本的 classify / protect 表達不了「下限」，因此新增。命中時把風險提高到規則指定的等級（medium 或 high）並取消預設勾選；沒有分類規則命中時，提醒規則本身就是標註結果。
+- **保護與提醒會延伸到所有子孫**：命中 `{Windows}` 就代表裡面的一切都受保護；例外用該規則的 `excludeGlob` 開放（例如 `{Windows}/Temp/**`）。掃描根目錄本身位於受保護路徑底下時（例如直接掃描 `C:\Windows\System32`），也會從上層繼承。
+- **「不可勾選」的範圍**：受保護的項目，以及**裡面含有受保護項目的資料夾**（例如 `C:\`，刪掉它就會刪到受保護的東西）。
+- **Glob 語意**（自行實作 `GlobPattern`，不用 FileSystemGlobbing）：`*`、`?` 只比對一段；`**` 比對零或多段；結尾的 `/**` 代表「裡面所有東西」，**不含資料夾本身**（和 .gitignore 相同）。不是完整路徑也不以 `**` 開頭的樣式：global 規則視為「任何位置」（前面加 `**/`），location 規則以 root 為起點。磁碟代號可以寫 `?:` 代表任何磁碟。
+- **Path Token**：除了 8.2 列的，另外加上 `{ProgramFiles(x86)}`、`{SystemDrive}`、`{Documents}`、`{Desktop}`、`{Pictures}`、`{Videos}`、`{Music}`（後五個用 Known Folder，資料夾被移到 OneDrive 也正確）。token 名稱打錯是錯誤；在這個作業系統上不存在（例如 Linux 的 `{Windows}`）只是讓該樣式不生效。`$VAR` 只有在環境變數存在時才展開，否則照字面（`$Recycle.Bin` 是資料夾名稱）。
+- **`siblingExists` / `childExists`**：掃描器不會保留每個小檔案（`package.json`、`*.csproj`），所以先查掃描結果中保留的項目，找不到再即時查詢檔案系統（同一次評估中快取）。只有其他條件都符合的候選（例如名稱是 `node_modules` 的資料夾）才會查詢，成本很低。
+- **具體程度**：條件數 × 1000 + 符合的 glob 字面字元數；同分取 `meta.createdUtc` 較新的，再依 id 排序（結果穩定）。
+- **類別統計**：只計算「上層沒有同類別」的項目，同一類別不重複計算；不同類別之間仍可能重疊（例如 `node_modules` 裡的大型 `.log`）。
+- **Validator 額外的檢查**：分類規則的風險只能是 low / medium / high（受保護請用保護規則）；高風險、永久刪除、保護規則不能預設勾選；樣式的固定開頭已經位於受保護路徑時，不需要掃描結果就直接擋下；dry-run 命中受保護項目時，回傳衝突清單並建議要加的 `excludeGlob`（UI 可以一鍵加入）。過寬的判斷：去掉結尾的 `*`、`**`、`*.*` 後只剩根目錄、只剩 `**`，或剛好是 `{UserProfile}`、`C:\Users`、`{Windows}`、`{LocalAppData}` 等常見的上層資料夾。
+- **`rules.user.json`**：先寫暫存檔再取代，並保留上一版 `.bak`。檔案無法解析時**不覆寫**，內建規則照常運作，但新增 / 修改會被拒絕，直到檔案修正（UI 顯示錯誤，可按「重新讀取」）。內建分類規則的停用以 `disabledBuiltin` 清單記錄；JSON 中出現不認識的欄位一律視為錯誤（避免打錯欄位名稱卻默默沒有作用），允許 `//` 註解。
+- **評估時機**：掃描完成時立即套用規則（包含在掃描耗時內）；規則變動後，下次查詢時以新版本重新評估（每次掃描結果快取一個版本）。
+- **勾選**：Phase 2 的勾選只存在瀏覽器（預設依 `autoSelect`），讓「保護路徑一律不可勾選」可以在 UI 上驗證；Phase 3 產生 Plan 時，伺服器會再檢查一次。
+
 ---
 
 ## 9. 掃描器
@@ -468,17 +484,22 @@ GET    /api/scans/{id}/events            # SSE 進度
 DELETE /api/scans/{id}                   # 取消
 GET    /api/scans/{id}                   # 狀態 + 進度 + 完成後的摘要（Phase 1 新增）
 GET    /api/scans/{id}/items?parentId=&flat=&kind=&minSize=&q=&ext=&olderThanDays=&sort=&order=&offset=&limit=
-                                         # Phase 2 再加 risk=&category=
-GET    /api/scans/{id}/items/{itemId}    # 項目 + 祖先路徑 + 子樹 extStats
+                         &risk=&category=&source=
+                                         # Phase 2：risk 可多選（逗號分隔，unknown = 未分類）；source=none 只看未分類
+                                         # 每個項目附上 classification、selectable、autoSelected、containsProtected
+GET    /api/scans/{id}/items/{itemId}    # 項目 + 祖先路徑 + 子樹 extStats + rules（命中的所有規則與角色）
+GET    /api/scans/{id}/categories        # Phase 2：各類別的數量與大小
 
 # 快速搜尋：見 9A.4（/api/search、/api/shell/*）
 
-GET    /api/rules                        # ?source=builtin|user|ai
-POST   /api/rules/validate               # { rule, scanId } → 驗證結果 + dry-run 命中
-POST   /api/rules                        # 寫入（必須先通過 validate）
+GET    /api/rules                        # ?source=builtin|user|ai；附上狀態、白名單命令、token 目前的值
+POST   /api/rules/validate               # { rule, scanId?, allowGlobalScope? } → 驗證結果 + dry-run 命中
+POST   /api/rules                        # 寫入（伺服器端一定再跑一次 validate，沒通過就 400）
 PUT    /api/rules/{id}
 DELETE /api/rules/{id}
-POST   /api/rules/import | GET /api/rules/export
+PUT    /api/rules/{id}/enabled           # { enabled }；內建保護規則不能停用
+POST   /api/rules/import | GET /api/rules/export   # rules.user.json 格式；匯入全部通過才寫入
+POST   /api/rules/reload                 # 重新讀取規則檔（在外部編輯過時）
 
 POST   /api/plans                        # 產生 + dry-run
 POST   /api/plans/{id}/execute
@@ -643,6 +664,13 @@ POST   /api/ai/propose-rule              # { scanId, instruction, contextItemIds
 
 > 路徑細節與實際位置，在 Phase 2 時要在真實的 Windows 機器上逐條驗證。
 
+**Phase 2 驗證結果（2026-10-25，Windows 11）**：規則檔在 `rules/builtin/`（`windows.json`、`common.json`、`unix.json`），打包進 `WindowsTool.Core`。
+- 存在並已確認：`{LocalAppData}/Temp`、`{Windows}/Temp`、`{Windows}/SoftwareDistribution/Download`、`{Windows}/Minidump`、`{UserProfile}/.nuget/packages`、`{LocalAppData}/npm-cache`、`{LocalAppData}/pip/Cache`、Chrome / Edge 的 `User Data/<設定檔>/Cache`、`Code Cache`、`GPUCache`（設定檔有 `Default`、`Profile 1` 等，因此寫成 `User Data/*/Cache`）、`{ProgramData}/Package Cache`、`{UserProfile}/Downloads`、`pagefile.sys` / `hiberfil.sys` / `swapfile.sys`（`Test-Path` 因檔案被鎖定而回報不存在，`dir /a` 可以看到）、`System Volume Information`、`$Recycle.Bin`、`Recovery`。
+- 這台機器沒有、但保留規則：`{LocalAppData}/CrashDumps`（沒有當機過才不存在）、`{Windows}/MEMORY.DMP`。
+- Docker Desktop 的磁碟映像實際是 `{LocalAppData}/Docker/wsl/data/ext4.vhdx`（這台 36 GB），沒有 `docker_data.vhdx`；兩個名稱都保留。
+- 與表格的差異：`win-temp-user`、`win-temp-sys` 都加上 `minAgeDays ≥ 2`，而且 `/**` 不含 Temp 資料夾本身（不會建議刪除 Temp 本身）；`win-installer-cache` 同時標註資料夾本身；`.git` 與個人資料夾用新的 `caution` 規則；另外加上開機檔案（`{SystemDrive}/Boot`、`bootmgr`、`BOOTNXT`、`EFI`）的保護。
+- 實測（`C:\Users\<user>`，64 萬個檔案、28 萬個保留項目）：規則評估 1.1 秒（第一次，包含 `siblingExists` 的檔案系統查詢）。分出的類別：Docker / WSL 映像 36 GB、個人檔案 9.9 GB、套件快取 5.6 GB、可重建的相依套件 3.5 GB（另有 465 MB 位於個人資料夾而提高為高風險）、舊下載檔 2.1 GB、暫存檔 1.8 GB（1,486 項預設勾選）、瀏覽器快取 1.2 GB 等。`C:\Program Files` 全部 57 個項目都是受保護且不可勾選。
+
 ---
 
 ## 15. 平台差異抽象
@@ -727,6 +755,13 @@ dotnet publish src/WindowsTool.App -c Release -r win-x64 --self-contained true \
 - 內建的 Windows 規則（第 13、14 節）並在真實機器上驗證路徑。
 - 規則管理頁（列表、啟用 / 停用、手動新增和編輯）。
 - ✅ 驗收：規則引擎的單元測試涵蓋率 ≥ 85%；保護路徑**一律不可勾選**；過寬 glob 會被擋下；dry-run 命中數量正確。
+- **進度（2026-10-25）**：已完成，分支 `phase-2-rules`。設計決策見 8.5，路徑驗證見 14 節後的說明。
+  - 涵蓋率（`Core/Rules`）：行 96.5%、分支 89.8%。
+  - 保護路徑不可勾選：自動化測試（繼承、例外路徑、包含受保護項目的上層資料夾、掃描根目錄位於受保護路徑下）＋ UI 實測（`C:\Program Files` 57 個項目的勾選框全部停用）。
+  - 過寬 glob：`**`、`**/*`、`*.*`、`C:/**`、`?:/**`、`/`、`{UserProfile}/**`、`C:/Users/**`、`{Windows}/**` 等 18 種寫法都被擋下；`**/node_modules`、`{LocalAppData}/Temp/**` 等可以通過。
+  - dry-run：與逐一評估每個項目的參考答案一致（命中數、去除巢狀後的大小）；命中受保護項目時擋下並建議排除條件。
+  - 規則管理頁：列表（依保護 / 提醒 / 分類分組，預設只顯示目前作業系統適用的）、啟用 / 停用、表單與 JSON 兩種編輯方式、檢查並試套用、從掃描項目建立規則（路徑自動換成 `{UserProfile}` 等變數）、匯入 / 匯出。
+  - 測試共 280 個（Phase 1.5 時 138 個；新增 142 個，含 9 個規則 API 整合測試）。
 
 ### Phase 3｜執行器（2–3 天）
 - `ITrash`（先完成 Windows）、隔離區 + manifest、move、delete 二次確認、白名單命令。
@@ -765,6 +800,7 @@ dotnet publish src/WindowsTool.App -c Release -r win-x64 --self-contained true \
 - **AI 測試**：`FakeChatClient` 回放固定回應，CI 不連任何真實 AI。
 - **Windows 專屬測試**：`[Trait("os","windows")]`，只在 windows runner 上跑。
 - **手動驗收清單**：每個 Phase 結束時在真實機器上照驗收條件逐項確認，結果記錄在 PR 描述。
+- **涵蓋率**：`dotnet test --project tests/WindowsTool.Core.Tests --coverage --coverage-output-format cobertura --coverage-output <路徑>`（`Microsoft.Testing.Extensions.CodeCoverage`，只加在 Core.Tests）。
 
 ---
 

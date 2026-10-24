@@ -3,6 +3,7 @@
 import { api } from '../api.js';
 import {
   formatBytes, formatNumber, formatDate, formatDuration, formatPercent, FLAG_LABELS, extLabel,
+  RISK_LABELS, ACTION_LABELS, SOURCE_LABELS, KIND_LABELS,
 } from '../format.js';
 
 const { ref, reactive, computed, watch, provide, onMounted } = Vue;
@@ -27,6 +28,17 @@ const AGES = [
 
 const KIND_ICONS = { dir: '📁', file: '📄', link: '🔗' };
 
+const RISK_FILTERS = [
+  { value: '', label: '所有風險' },
+  { value: 'low', label: '低風險' },
+  { value: 'medium', label: '中風險' },
+  { value: 'high', label: '高風險' },
+  { value: 'protected', label: '受保護' },
+  { value: 'unknown', label: '未分類' },
+];
+
+const ROLE_LABELS = { effective: '生效', caution: '提高風險', overridden: '被蓋過' };
+
 function debounce(fn, ms) {
   let timer;
   return (...args) => {
@@ -39,9 +51,10 @@ export const ResultView = {
   name: 'ResultView',
   props: {
     scan: { type: Object, required: true },
+    rulesVersion: { type: Number, default: 0 },
   },
-  emits: ['new-scan', 'rescan'],
-  setup(props) {
+  emits: ['new-scan', 'rescan', 'create-rule'],
+  setup(props, { emit }) {
     const scanId = props.scan.scanId;
     const summary = props.scan.summary;
 
@@ -51,7 +64,7 @@ export const ResultView = {
     const rootItem = ref(null);
 
     // ---- 表格 ----
-    const filters = reactive({ flat: false, kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null });
+    const filters = reactive({ flat: false, kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null, risk: '', category: '' });
     const sort = reactive({ by: 'size', desc: true });
     const page = reactive({ items: [], total: 0, parent: null, otherFiles: null, loading: false, error: null });
 
@@ -62,8 +75,102 @@ export const ResultView = {
     const showErrors = ref(false);
     const copied = ref(false);
 
+    // ---- 規則標註與勾選 ----
+    // 勾選只記在瀏覽器：預設依規則的 autoSelect，使用者可以改；受保護的項目一律不能勾選。
+    // 實際的清理（執行計畫）在下一個階段加入。
+    const categories = ref([]);
+    const known = reactive({}); // id → { size, auto, selectable, path }
+    const picks = reactive({}); // id → true / false（使用者手動改過的）
+
     const hasFilters = computed(() =>
-      filters.kind !== 'any' || filters.minSize !== null || filters.q.trim() !== '' || filters.ext.trim() !== '' || filters.olderThanDays !== null);
+      filters.kind !== 'any' || filters.minSize !== null || filters.q.trim() !== '' || filters.ext.trim() !== ''
+      || filters.olderThanDays !== null || filters.risk !== '' || filters.category !== '');
+
+    // 大小只計算最上層：資料夾和它裡面的項目都勾選時不重複計算
+    const selection = computed(() => {
+      const chosen = [];
+      for (const [id, info] of Object.entries(known)) {
+        const on = id in picks ? picks[id] : info.auto;
+        if (on && info.selectable) chosen.push(info);
+      }
+      const paths = new Set(chosen.map((i) => i.path.toLowerCase()));
+      let size = 0;
+      for (const info of chosen) {
+        let p = info.path.toLowerCase();
+        let nested = false;
+        for (let cut = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/')); cut > 0; cut = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))) {
+          p = p.slice(0, cut);
+          if (paths.has(p)) { nested = true; break; }
+        }
+        if (!nested) size += info.size;
+      }
+      return { count: chosen.length, size };
+    });
+
+    function remember(items) {
+      for (const item of items) {
+        if (item) known[item.id] = { size: item.size, auto: item.autoSelected, selectable: item.selectable, path: item.path };
+      }
+    }
+
+    function isChecked(item) {
+      if (!item.selectable) return false;
+      return item.id in picks ? picks[item.id] : item.autoSelected;
+    }
+
+    function toggle(item, event) {
+      if (!item.selectable) return;
+      picks[item.id] = event.target.checked;
+    }
+
+    function clearSelection() {
+      for (const id of Object.keys(known)) picks[id] = false;
+    }
+
+    function lockReason(item) {
+      if (item.classification?.risk === 'protected') return `受保護：${item.classification.ruleName}`;
+      if (item.containsProtected) return '這個資料夾裡有受保護的項目，不能整個勾選';
+      return '';
+    }
+
+    function riskClass(c) {
+      return 'risk risk-' + (c ? c.risk : 'unknown');
+    }
+
+    function classificationTitle(c) {
+      if (!c) return '';
+      const parts = [`${c.category}（${RISK_LABELS[c.risk]}）`, `建議：${ACTION_LABELS[c.action] ?? c.action}`];
+      if (c.reason) parts.push(c.reason);
+      if (c.cautionReason) parts.push(`注意：${c.cautionReason}`);
+      parts.push(`規則：${c.ruleName}（${SOURCE_LABELS[c.source]}${c.inherited ? '，由上層資料夾延伸' : ''}）`);
+      return parts.join('\n');
+    }
+
+    async function loadCategories() {
+      try {
+        const result = await api(`/api/scans/${scanId}/categories`);
+        categories.value = result.categories;
+      } catch {
+        categories.value = [];
+      }
+    }
+
+    function filterCategory(c) {
+      if (filters.category === c.category && filters.risk === c.risk) {
+        filters.category = '';
+        filters.risk = '';
+        return;
+      }
+      filters.category = c.category;
+      filters.risk = c.risk;
+      filters.flat = true;
+    }
+
+    function createRule() {
+      const item = detail.value?.item;
+      if (!item) return;
+      emit('create-rule', { path: item.path, name: item.name, kind: item.kind, scanId });
+    }
 
     const detail = computed(() => itemDetail.value ?? folderDetail.value);
     const breadcrumb = computed(() => {
@@ -85,6 +192,8 @@ export const ResultView = {
       if (filters.q.trim()) params.set('q', filters.q.trim());
       if (filters.ext.trim()) params.set('ext', filters.ext.trim());
       if (filters.olderThanDays !== null) params.set('olderThanDays', filters.olderThanDays);
+      if (filters.risk) params.set('risk', filters.risk);
+      if (filters.category) params.set('category', filters.category);
       return `/api/scans/${scanId}/items?${params}`;
     }
 
@@ -97,6 +206,7 @@ export const ResultView = {
         const result = await api(query(append ? page.items.length : 0));
         if (seq !== requestSeq) return; // 已經有更新的查詢
         page.items = append ? [...page.items, ...result.items] : result.items;
+        remember(result.items);
         page.total = result.total;
         page.parent = result.parent;
         page.otherFiles = result.otherFiles;
@@ -128,6 +238,7 @@ export const ResultView = {
       selectedItem.value = item;
       try {
         itemDetail.value = await api(`/api/scans/${scanId}/items/${item.id}`);
+        remember([itemDetail.value.item]);
       } catch (err) {
         page.error = err.message;
       }
@@ -147,7 +258,7 @@ export const ResultView = {
     }
 
     function resetFilters() {
-      Object.assign(filters, { kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null });
+      Object.assign(filters, { kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null, risk: '', category: '' });
     }
 
     async function shell(action) {
@@ -179,7 +290,13 @@ export const ResultView = {
 
     const reloadSoon = debounce(() => loadItems(), 300);
     watch(() => [filters.q, filters.ext], reloadSoon);
-    watch(() => [filters.flat, filters.kind, filters.minSize, filters.olderThanDays, sort.by, sort.desc], () => loadItems());
+    watch(() => [filters.flat, filters.kind, filters.minSize, filters.olderThanDays, filters.risk, filters.category, sort.by, sort.desc], () => loadItems());
+
+    // 規則變動後重新載入（伺服器會用新的規則重新評估）
+    watch(() => props.rulesVersion, async () => {
+      await Promise.all([loadItems(), loadFolderDetail(), loadCategories()]);
+      if (selectedItem.value) await selectItem(selectedItem.value);
+    });
 
     onMounted(async () => {
       try {
@@ -188,7 +305,7 @@ export const ResultView = {
       } catch (err) {
         page.error = err.message;
       }
-      await openFolder(summary.rootId);
+      await Promise.all([openFolder(summary.rootId), loadCategories()]);
     });
 
     function sortMark(column) {
@@ -205,6 +322,9 @@ export const ResultView = {
     return {
       scan: props.scan, summary, rootItem, filters, sort, page, detail, folderDetail, selectedItem, breadcrumb,
       hasFilters, showErrors, copied, MIN_SIZES, AGES, KIND_ICONS, FLAG_LABELS,
+      RISK_FILTERS, RISK_LABELS, ACTION_LABELS, SOURCE_LABELS, KIND_LABELS, ROLE_LABELS,
+      categories, selection, isChecked, toggle, clearSelection, lockReason, riskClass, classificationTitle,
+      filterCategory, createRule,
       openFolder, selectItem, activate, sortBy, sortMark, resetFilters, copyPath, relativeParent, shell,
       loadMore: () => loadItems(true),
       formatBytes, formatNumber, formatDate, formatDuration, formatPercent, extLabel,
@@ -235,6 +355,15 @@ export const ResultView = {
           <li v-for="e in summary.errors" :key="e.path"><span>{{ e.path }}</span> <span class="muted">— {{ e.reason }}</span></li>
           <li v-if="summary.errors.length < summary.errorCount" class="muted">…另有 {{ formatNumber(summary.errorCount - summary.errors.length) }} 個未列出</li>
         </ul>
+      </div>
+      <div v-if="categories.length" class="category-bar" aria-label="規則分類">
+        <button v-for="c in categories.slice(0, 14)" :key="c.category + c.risk" type="button" class="category-chip"
+                :class="{ active: filters.category === c.category && filters.risk === c.risk }"
+                :title="'按一下只看這個類別（' + formatNumber(c.count) + ' 項' + (c.autoSelectCount ? '，其中 ' + formatNumber(c.autoSelectCount) + ' 項預設勾選' : '') + '）'"
+                @click="filterCategory(c)">
+          <span :class="riskClass(c)"><span class="risk-dot" aria-hidden="true"></span><span>{{ c.category }}</span></span>
+          <span class="size">{{ formatBytes(c.size) }}</span>
+        </button>
       </div>
     </section>
 
@@ -273,6 +402,13 @@ export const ResultView = {
           </select>
           <input class="input grow" v-model="filters.q" placeholder="名稱包含…" aria-label="名稱包含" spellcheck="false">
           <input class="input ext-input" v-model="filters.ext" placeholder="副檔名，如 mp4 iso" aria-label="副檔名" spellcheck="false">
+          <select class="input" v-model="filters.risk" aria-label="風險">
+            <option v-for="o in RISK_FILTERS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+          <select v-if="categories.length" class="input" v-model="filters.category" aria-label="類別">
+            <option value="">所有類別</option>
+            <option v-for="c in [...new Set(categories.map(x => x.category))]" :key="c" :value="c">{{ c }}</option>
+          </select>
           <button v-if="hasFilters" class="link" type="button" @click="resetFilters">清除條件</button>
         </div>
 
@@ -282,7 +418,9 @@ export const ResultView = {
           <table class="items">
             <thead>
               <tr>
+                <th class="check-col"><span class="sr-only">勾選</span></th>
                 <th><button type="button" class="th-btn" @click="sortBy('name')">名稱 {{ sortMark('name') }}</button></th>
+                <th class="hide-sm">分類</th>
                 <th class="num"><button type="button" class="th-btn" @click="sortBy('size')">大小 {{ sortMark('size') }}</button></th>
                 <th class="share">佔比</th>
                 <th class="num hide-sm"><button type="button" class="th-btn" @click="sortBy('files')">檔案數 {{ sortMark('files') }}</button></th>
@@ -292,6 +430,10 @@ export const ResultView = {
             <tbody>
               <tr v-for="item in page.items" :key="item.id" :class="{ selected: selectedItem && selectedItem.id === item.id }"
                   @click="selectItem(item)" @dblclick="activate(item)" tabindex="0" @keydown.enter="activate(item)">
+                <td class="check-col" @click.stop>
+                  <input type="checkbox" :checked="isChecked(item)" :disabled="!item.selectable" @change="toggle(item, $event)"
+                         :title="item.selectable ? '勾選' : lockReason(item)" :aria-label="'勾選 ' + item.name">
+                </td>
                 <td class="name-cell">
                   <span class="kind-icon" aria-hidden="true">{{ KIND_ICONS[item.kind] }}</span>
                   <span class="name-text">
@@ -302,6 +444,12 @@ export const ResultView = {
                   <span v-if="item.kind === 'dir' && item.deniedCount > 0 && !item.flags.includes('accessDenied')" class="badge badge-accessDenied"
                         title="這個資料夾裡有無法讀取的路徑，大小可能被低估">含無法讀取</span>
                 </td>
+                <td class="hide-sm cat-cell">
+                  <span v-if="item.classification" :class="riskClass(item.classification)" :title="classificationTitle(item.classification)">
+                    <span class="risk-dot" aria-hidden="true"></span><span>{{ item.classification.category }}</span>
+                  </span>
+                  <span v-else-if="item.containsProtected" class="lock" title="這個資料夾裡有受保護的項目">🔒 含受保護</span>
+                </td>
                 <td class="num">{{ formatBytes(item.size) }}</td>
                 <td class="share">
                   <span class="share-bar" aria-hidden="true"><span :style="{ width: page.parent && page.parent.size ? (item.size / page.parent.size * 100).toFixed(1) + '%' : '0' }"></span></span>
@@ -311,14 +459,16 @@ export const ResultView = {
                 <td class="hide-sm nowrap">{{ formatDate(item.newestWriteUtc) }}</td>
               </tr>
               <tr v-if="!filters.flat && !hasFilters && page.otherFiles" class="other-row">
+                <td class="check-col"></td>
                 <td class="name-cell"><span class="kind-icon" aria-hidden="true">…</span> 其他 {{ formatNumber(page.otherFiles.count) }} 個小檔案</td>
+                <td class="hide-sm"></td>
                 <td class="num">{{ formatBytes(page.otherFiles.size) }}</td>
                 <td class="share"><span class="muted">{{ formatPercent(page.otherFiles.size, page.parent && page.parent.size) }}</span></td>
                 <td class="hide-sm"></td>
                 <td class="hide-sm"></td>
               </tr>
               <tr v-if="!page.loading && page.items.length === 0 && !page.otherFiles">
-                <td colspan="5" class="empty muted">{{ hasFilters ? '沒有符合條件的項目。' : '這個資料夾是空的。' }}</td>
+                <td colspan="7" class="empty muted">{{ hasFilters ? '沒有符合條件的項目。' : '這個資料夾是空的。' }}</td>
               </tr>
             </tbody>
           </table>
@@ -328,7 +478,12 @@ export const ResultView = {
           <span class="muted">{{ page.loading ? '載入中…' : '共 ' + formatNumber(page.total) + ' 項' + (page.items.length < page.total ? '，已顯示 ' + formatNumber(page.items.length) + ' 項' : '') }}</span>
           <button v-if="page.items.length < page.total" class="btn" type="button" @click="loadMore" :disabled="page.loading">顯示更多</button>
         </div>
-        <p class="hint muted">按一下查看詳情；按兩下資料夾可以進入。</p>
+        <div v-if="selection.count > 0" class="selection-bar" role="status">
+          <span>已勾選 <strong>{{ formatNumber(selection.count) }}</strong> 項（約 {{ formatBytes(selection.size) }}）</span>
+          <span class="muted">清理功能（執行計畫）將在下一個階段加入；受保護的項目不會被勾選。</span>
+          <button class="link" type="button" @click="clearSelection">全部取消</button>
+        </div>
+        <p class="hint muted">按一下查看詳情；按兩下資料夾可以進入。勾選預設依規則決定。</p>
       </section>
 
       <aside class="card detail-pane" aria-label="項目詳情">
@@ -339,6 +494,30 @@ export const ResultView = {
             <button class="btn small" type="button" @click="shell('reveal')">在檔案總管中顯示</button>
             <button class="btn small" type="button" @click="shell('open')">開啟</button>
             <button class="btn small" type="button" @click="copyPath(detail.item.path)">{{ copied ? '已複製' : '複製路徑' }}</button>
+            <button class="btn small" type="button" @click="createRule">以此建立規則</button>
+          </div>
+
+          <div class="classification">
+            <template v-if="detail.item.classification">
+              <span :class="riskClass(detail.item.classification)"><span class="risk-dot" aria-hidden="true"></span>
+                <span>{{ detail.item.classification.category }} · {{ RISK_LABELS[detail.item.classification.risk] }}</span></span>
+              <p><strong>建議：</strong>{{ ACTION_LABELS[detail.item.classification.action] }}
+                <code v-if="detail.item.classification.method">{{ detail.item.classification.method }}</code></p>
+              <p v-if="detail.item.classification.reason">{{ detail.item.classification.reason }}</p>
+              <p v-if="detail.item.classification.cautionReason" class="warn">注意：{{ detail.item.classification.cautionReason }}</p>
+            </template>
+            <p v-else class="muted" style="margin:0">沒有符合的規則（未分類）。</p>
+            <p v-if="!detail.item.selectable" class="lock">🔒 {{ lockReason(detail.item) }}</p>
+            <template v-if="detail.rules && detail.rules.length">
+              <h4 style="margin-top:10px">命中的規則</h4>
+              <ul class="rule-hits">
+                <li v-for="r in detail.rules" :key="r.id">
+                  <span :class="{ overridden: r.role === 'overridden' }">{{ r.name }}</span>
+                  <span class="badge">{{ KIND_LABELS[r.kind] }} · {{ SOURCE_LABELS[r.source] }}</span>
+                  <span class="muted">{{ ROLE_LABELS[r.role] }}{{ r.inherited ? '（由上層延伸）' : '' }}</span>
+                </li>
+              </ul>
+            </template>
           </div>
 
           <dl class="detail-list">
