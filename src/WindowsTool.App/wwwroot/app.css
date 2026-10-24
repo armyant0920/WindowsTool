@@ -471,3 +471,12 @@ table.hits tr:focus-within .actions-col .link { visibility: visible; }
 .state-badge.state-skipped, .state-badge.outcome-skipped { color: var(--muted); border: 1px solid var(--border); }
 .command-output { margin: 4px 0 0; padding: 6px 8px; background: var(--surface-2); border-radius: 4px; font-size: 12px; white-space: pre-wrap; max-height: 160px; overflow: auto; }
 .items tbody tr.done td:not(.check-col) { opacity: .5; text-decoration: line-through; }
+
+/* ---- 類別 / 已勾選的說明列 ---------------------------------------------- */
+.category-banner {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px;
+  margin-bottom: 10px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); font-size: 13px;
+}
+.category-banner > div:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.category-banner-actions { display: flex; align-items: center; gap: 12px; }
+.items th.check-col input { cursor: pointer; }

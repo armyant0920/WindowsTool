@@ -114,6 +114,7 @@ public sealed class LocalSecurityTests(AppFactory factory) : IClassFixture<AppFa
 
         response.StatusCode.ShouldBe(HttpStatusCode.OK);
         response.Content.Headers.ContentType?.MediaType.ShouldBe(mediaType);
+        response.Headers.CacheControl?.NoCache.ShouldBeTrue(); // 更新程式後不會用到舊版的前端檔案
     }
 
     [Fact]

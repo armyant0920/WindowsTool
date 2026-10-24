@@ -6,8 +6,10 @@ namespace WindowsTool.App.Plans;
 /// 從掃描結果建立執行計畫。勾選 = （<c>useAutoSelect</c> 時所有預設勾選的項目）＋ <c>include</c> − <c>exclude</c>。
 /// <c>action</c>：<c>suggested</c>（依規則建議，預設）/ <c>recycle</c> / <c>quarantine</c> / <c>move</c> / <c>delete</c>。
 /// </summary>
+/// <param name="UseSelection">使用掃描結果頁上勾選的項目（UI 使用這個）；指定時忽略其他勾選參數。</param>
 public sealed record CreatePlanRequest(
     string? ScanId,
+    bool? UseSelection = null,
     bool? UseAutoSelect = null,
     IReadOnlyList<int>? Include = null,
     IReadOnlyList<int>? Exclude = null,

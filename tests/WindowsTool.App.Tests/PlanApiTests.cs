@@ -163,6 +163,105 @@ public sealed class PlanApiTests : IDisposable
     }
 
     [Fact]
+    public async Task Selection_is_kept_on_the_server_and_drives_the_plan()
+    {
+        var (client, scanId, ids) = await SetupAsync();
+        using var _ = client;
+
+        async Task<JsonNode> Selection(string? body = null)
+        {
+            if (body is null)
+            {
+                return (await client.GetFromJsonAsync<JsonNode>(U($"/api/scans/{scanId}/selection"), Ct))!;
+            }
+
+            using var response = await client.PostAsync(U($"/api/scans/{scanId}/selection"), Json(body), Ct);
+            response.StatusCode.ShouldBe(HttpStatusCode.OK, await response.Content.ReadAsStringAsync(Ct));
+            return await ReadAsync(response);
+        }
+
+        // 掃描完成時不會自動勾選；建議清理的項目另外統計
+        var initial = await Selection();
+        initial["count"]!.GetValue<int>().ShouldBe(0);
+        initial["suggestedCount"]!.GetValue<int>().ShouldBe(1);
+        initial["suggestedSize"]!.GetValue<long>().ShouldBe(4 * 1024 * 1024);
+
+        // 受保護的項目勾不進去
+        (await Selection($$"""{ "action": "add", "ids": [{{ids["vault"]}}, {{ids["secret.bin"]}}] }"""))["count"]!.GetValue<int>().ShouldBe(0);
+
+        var suggested = await Selection("""{ "action": "suggested" }""");
+        suggested["count"]!.GetValue<int>().ShouldBe(1);
+        suggested["suggestedRemaining"]!.GetValue<int>().ShouldBe(0);
+        initial["suggestedRemaining"]!.GetValue<int>().ShouldBe(1);
+
+        // 依條件全選：所有可以勾選的項目；大小在上下層都勾選時只算一次
+        var all = await Selection("""{ "action": "add", "filter": { "flat": true } }""");
+        all["count"]!.GetValue<int>().ShouldBe(2); // junk（含 a.bin、b.bin）、other.bin
+        all["size"]!.GetValue<long>().ShouldBe(6 * 1024 * 1024);
+
+        var selectedPage = await client.GetFromJsonAsync<JsonNode>(U($"/api/scans/{scanId}/items?flat=true&selected=true"), Ct);
+        selectedPage!["total"]!.GetValue<int>().ShouldBe(2); // 只列最上層：junk、other.bin
+        selectedPage["items"]!.AsArray().ShouldAllBe(i => i!["selected"]!.GetValue<bool>());
+
+        var everything = await client.GetFromJsonAsync<JsonNode>(U($"/api/scans/{scanId}/items?flat=true"), Ct);
+        everything!["selectableInView"]!.GetValue<int>().ShouldBe(4);
+        everything["selectedInView"]!.GetValue<int>().ShouldBe(4);
+
+        (await Selection($$"""{ "action": "remove", "ids": [{{ids["other.bin"]}}] }"""))["count"]!.GetValue<int>().ShouldBe(1);
+
+        // 用勾選建立計畫並執行：上下層只處理上層；處理過的項目從勾選中移除並標示
+        var created = await CreatePlanAsync(client, $$"""{ "scanId": "{{scanId}}", "useSelection": true, "action": "quarantine" }""");
+        created["plan"]!["summary"]!["ready"]!.GetValue<int>().ShouldBe(1);
+        created["plan"]!["summary"]!["skipped"]!.GetValue<int>().ShouldBe(2);
+        await RunAsync(client, created["plan"]!["planId"]!.GetValue<string>());
+
+        (await Selection())["count"]!.GetValue<int>().ShouldBe(0);
+        var after = await client.GetFromJsonAsync<JsonNode>(U($"/api/scans/{scanId}/items?flat=true"), Ct);
+        var junk = after!["items"]!.AsArray().Single(i => i!["name"]!.GetValue<string>() == "junk")!;
+        junk["done"]!.GetValue<bool>().ShouldBeTrue();
+        junk["selectable"]!.GetValue<bool>().ShouldBeFalse();
+        after["items"]!.AsArray().Single(i => i!["name"]!.GetValue<string>() == "a.bin")!["done"]!.GetValue<bool>().ShouldBeTrue(); // 上層處理過
+
+        (await Selection("""{ "action": "clear" }"""))["count"]!.GetValue<int>().ShouldBe(0);
+        using var bad = await client.PostAsync(U($"/api/scans/{scanId}/selection"), Json("""{ "action": "explode" }"""), Ct);
+        bad.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Top_level_view_matches_the_category_totals()
+    {
+        File("deep/x/y.bin", 2 * 1024 * 1024);
+        File("deep/z.bin", 2 * 1024 * 1024);
+        var client = Client();
+        using var _ = client;
+        var root = _root.Replace('\\', '/');
+        using (var rule = await client.PostAsync(U("/api/rules"), Json($$"""
+            { "rule": { "id": "user-deep", "name": "深", "match": { "pathGlob": ["{{root}}/deep", "{{root}}/deep/**"] }, "result": { "category": "深層", "risk": "low" } } }
+            """), Ct))
+        {
+            rule.StatusCode.ShouldBe(HttpStatusCode.Created);
+        }
+
+        using var start = await client.PostAsJsonAsync(U("/api/scans"), new StartScanRequest(_root), Ct);
+        var scanId = (await start.Content.ReadFromJsonAsync<StartScanResponse>(Ct))!.ScanId;
+        while ((await client.GetFromJsonAsync<ScanStatusDto>(U($"/api/scans/{scanId}"), Ct))!.Status == "running")
+        {
+            await Task.Delay(50, Ct);
+        }
+
+        var category = Uri.EscapeDataString("深層");
+        var all = await client.GetFromJsonAsync<JsonNode>(U($"/api/scans/{scanId}/items?flat=true&category={category}"), Ct);
+        all!["total"]!.GetValue<int>().ShouldBe(4); // deep、x、y.bin、z.bin
+
+        var top = await client.GetFromJsonAsync<JsonNode>(U($"/api/scans/{scanId}/items?flat=true&category={category}&topLevel=true"), Ct);
+        top!["total"]!.GetValue<int>().ShouldBe(1);
+        var categories = await client.GetFromJsonAsync<JsonNode>(U($"/api/scans/{scanId}/categories"), Ct);
+        var summary = categories!["categories"]!.AsArray().Single(c => c!["category"]!.GetValue<string>() == "深層")!;
+        top["sizeInView"]!.GetValue<long>().ShouldBe(summary["size"]!.GetValue<long>());
+        all["sizeInView"]!.GetValue<long>().ShouldBe(summary["size"]!.GetValue<long>()); // 去除巢狀後也一樣
+    }
+
+    [Fact]
     public async Task Quarantine_and_restore_through_the_api()
     {
         var (client, scanId, ids) = await SetupAsync();

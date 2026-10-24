@@ -40,7 +40,12 @@ app.UseMiddleware<LocalSecurityMiddleware>();
 
 var files = StaticAssets.CreateFileProvider(app.Environment);
 app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
-app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = files,
+    // 每次都向伺服器確認（有 ETag，沒變就回 304）：更新程式後瀏覽器不會繼續用舊版的前端檔案
+    OnPrepareResponse = context => context.Context.Response.Headers.CacheControl = "no-cache",
+});
 
 app.MapSystemEndpoints();
 app.MapScanEndpoints();

@@ -66,9 +66,16 @@ export const ResultView = {
     const rootItem = ref(null);
 
     // ---- 表格 ----
-    const filters = reactive({ flat: false, kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null, risk: '', category: '' });
+    const filters = reactive({
+      flat: false, kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null, risk: '', category: '',
+      topLevel: false, // 只列出最上層（同類別的子項目已經包含在上層裡，和類別統計的數字一致）
+      selected: false, // 只看已勾選
+    });
     const sort = reactive({ by: 'size', desc: true });
-    const page = reactive({ items: [], total: 0, parent: null, otherFiles: null, loading: false, error: null });
+    const page = reactive({
+      items: [], total: 0, parent: null, otherFiles: null, loading: false, error: null,
+      selectableInView: 0, selectedInView: 0, sizeInView: 0,
+    });
 
     // ---- 詳情 ----
     const folderDetail = ref(null);
@@ -78,85 +85,103 @@ export const ResultView = {
     const copied = ref(false);
 
     // ---- 規則標註與勾選 ----
-    // 勾選 =（所有依規則預設勾選的項目，由伺服器計算）＋ 手動勾選 − 手動取消。受保護的項目一律不能勾選。
-    // 這裡只記錄「手動改過的」，建立執行計畫時一併送出；伺服器會再檢查一次。
+    // 勾選記在伺服器（這次掃描）：掃描完成時不會自動勾選；切換資料夾、篩選、重新整理都不會遺失。
+    // 受保護、已經處理過的項目一律不能勾選。
     const categories = ref([]);
-    const known = reactive({}); // id → { size, auto, selectable }
-    const picks = reactive({}); // id → true / false（使用者手動改過的）
-    const autoEnabled = ref(true); // 「全部取消」後不再套用預設勾選
-    const done = reactive({}); // id → true：已經處理過（移到資源回收筒、隔離區…）
+    const selection = ref({ count: 0, size: 0, suggestedCount: 0, suggestedSize: 0, suggestedRemaining: 0, suggestedRemainingSize: 0 });
+    const selectionBusy = ref(false);
     const planSelection = ref(null); // 開啟執行計畫時的勾選快照
 
     const hasFilters = computed(() =>
       filters.kind !== 'any' || filters.minSize !== null || filters.q.trim() !== '' || filters.ext.trim() !== ''
-      || filters.olderThanDays !== null || filters.risk !== '' || filters.category !== '');
+      || filters.olderThanDays !== null || filters.risk !== '' || filters.category !== '' || filters.topLevel || filters.selected);
 
-    // 數量與大小是估計值：預設勾選的部分取自類別統計（同類別的上下層不重複計算），精確數字在執行計畫的預覽中
-    const selection = computed(() => {
-      const auto = autoEnabled.value;
-      let count = auto ? categories.value.reduce((sum, c) => sum + c.autoSelectCount, 0) : 0;
-      let size = auto ? categories.value.reduce((sum, c) => sum + c.autoSelectSize, 0) : 0;
-      const include = [];
-      const exclude = [];
-      for (const [key, on] of Object.entries(picks)) {
-        const info = known[key];
-        if (!info || !info.selectable || done[key]) continue;
-        const preset = auto && info.auto;
-        if (on && !preset) {
-          include.push(Number(key));
-          count++;
-          size += info.size;
-        } else if (!on && preset) {
-          exclude.push(Number(key));
-          count--;
-          size -= info.size;
-        }
-      }
-      return { useAutoSelect: auto, include, exclude, count: Math.max(0, count), size: Math.max(0, size) };
+    // 表頭的全選：套用到「目前條件下的所有項目」，不只畫面上看得到的
+    const headerState = computed(() => {
+      if (!page.selectableInView) return 'none';
+      if (page.selectedInView === 0) return 'none';
+      return page.selectedInView >= page.selectableInView ? 'all' : 'some';
     });
 
-    function remember(items) {
-      for (const item of items) {
-        if (item) known[item.id] = { size: item.size, auto: item.autoSelected, selectable: item.selectable };
+    async function loadSelection() {
+      try {
+        selection.value = await api(`/api/scans/${scanId}/selection`);
+      } catch {
+        // 只是統計，失敗不影響其他功能
       }
     }
 
-    function isChecked(item) {
-      if (!item.selectable || done[item.id]) return false;
-      return item.id in picks ? picks[item.id] : autoEnabled.value && item.autoSelected;
+    async function changeSelection(body, reload = true) {
+      selectionBusy.value = true;
+      page.error = null;
+      try {
+        selection.value = await api(`/api/scans/${scanId}/selection`, { method: 'POST', body });
+        if (reload) await loadItems();
+      } catch (err) {
+        page.error = err.message;
+      } finally {
+        selectionBusy.value = false;
+      }
     }
 
-    function toggle(item, event) {
-      if (!item.selectable || done[item.id]) return;
-      picks[item.id] = event.target.checked;
+    function currentFilter() {
+      return {
+        parentId: selectedFolderId.value,
+        flat: filters.flat,
+        kind: filters.kind === 'any' ? null : filters.kind,
+        minSize: filters.minSize,
+        q: filters.q.trim() || null,
+        ext: filters.ext.trim() || null,
+        olderThanDays: filters.olderThanDays,
+        risk: filters.risk || null,
+        category: filters.category || null,
+        topLevel: filters.topLevel || null,
+        selected: filters.selected || null,
+      };
+    }
+
+    async function toggle(item, event) {
+      if (!item.selectable) return;
+      const on = event.target.checked;
+      item.selected = on;
+      page.selectedInView = Math.max(0, page.selectedInView + (on ? 1 : -1));
+      await changeSelection({ action: on ? 'add' : 'remove', ids: [item.id] }, false);
+    }
+
+    function toggleAll() {
+      const action = headerState.value === 'all' ? 'remove' : 'add';
+      return changeSelection({ action, filter: currentFilter() });
+    }
+
+    function selectSuggested() {
+      return changeSelection({ action: 'suggested' });
     }
 
     function clearSelection() {
-      autoEnabled.value = false;
-      for (const id of Object.keys(picks)) delete picks[id];
+      return changeSelection({ action: 'clear' });
     }
 
-    function restoreDefaults() {
-      autoEnabled.value = true;
-      for (const id of Object.keys(picks)) delete picks[id];
+    /** 只看已勾選的項目（整次掃描）。再按一次回到原本的清單。 */
+    function showSelected() {
+      if (filters.selected) {
+        filters.selected = false;
+        return;
+      }
+      Object.assign(filters, { selected: true, flat: true, category: '', risk: '', topLevel: false });
+      if (selectedFolderId.value !== summary.rootId) openFolder(summary.rootId);
     }
 
     function openPlan() {
-      planSelection.value = { ...selection.value };
+      planSelection.value = { count: selection.value.count, size: selection.value.size };
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    function onExecuted(itemIds) {
-      for (const id of itemIds) {
-        if (id != null) {
-          done[id] = true;
-          delete picks[id];
-        }
-      }
+    async function onExecuted() {
+      await Promise.all([loadItems(), loadSelection(), loadFolderDetail()]);
     }
 
     function lockReason(item) {
-      if (done[item.id]) return '已經處理過';
+      if (item.done) return '已經處理過';
       if (item.classification?.risk === 'protected') return `受保護：${item.classification.ruleName}`;
       if (item.containsProtected) return '這個資料夾裡有受保護的項目，不能整個勾選';
       return '';
@@ -184,16 +209,21 @@ export const ResultView = {
       }
     }
 
+    /** 點類別：回到整次掃描，只列出這個類別最上層的項目（加起來等於標籤上的數字）。再點一次取消。 */
     function filterCategory(c) {
       if (filters.category === c.category && filters.risk === c.risk) {
-        filters.category = '';
-        filters.risk = '';
+        Object.assign(filters, { category: '', risk: '', topLevel: false });
         return;
       }
-      filters.category = c.category;
-      filters.risk = c.risk;
-      filters.flat = true;
+      Object.assign(filters, {
+        category: c.category, risk: c.risk, topLevel: true, flat: true, selected: false,
+        kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null,
+      });
+      if (selectedFolderId.value !== summary.rootId) openFolder(summary.rootId);
     }
+
+    const activeCategory = computed(() =>
+      filters.category ? categories.value.find((c) => c.category === filters.category && c.risk === filters.risk) ?? null : null);
 
     function createRule() {
       const item = detail.value?.item;
@@ -223,6 +253,8 @@ export const ResultView = {
       if (filters.olderThanDays !== null) params.set('olderThanDays', filters.olderThanDays);
       if (filters.risk) params.set('risk', filters.risk);
       if (filters.category) params.set('category', filters.category);
+      if (filters.topLevel) params.set('topLevel', 'true');
+      if (filters.selected) params.set('selected', 'true');
       return `/api/scans/${scanId}/items?${params}`;
     }
 
@@ -235,8 +267,10 @@ export const ResultView = {
         const result = await api(query(append ? page.items.length : 0));
         if (seq !== requestSeq) return; // 已經有更新的查詢
         page.items = append ? [...page.items, ...result.items] : result.items;
-        remember(result.items);
         page.total = result.total;
+        page.selectableInView = result.selectableInView;
+        page.selectedInView = result.selectedInView;
+        page.sizeInView = result.sizeInView;
         page.parent = result.parent;
         page.otherFiles = result.otherFiles;
       } catch (err) {
@@ -267,7 +301,6 @@ export const ResultView = {
       selectedItem.value = item;
       try {
         itemDetail.value = await api(`/api/scans/${scanId}/items/${item.id}`);
-        remember([itemDetail.value.item]);
       } catch (err) {
         page.error = err.message;
       }
@@ -287,7 +320,7 @@ export const ResultView = {
     }
 
     function resetFilters() {
-      Object.assign(filters, { kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null, risk: '', category: '' });
+      Object.assign(filters, { kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null, risk: '', category: '', topLevel: false, selected: false });
     }
 
     async function shell(action) {
@@ -319,11 +352,12 @@ export const ResultView = {
 
     const reloadSoon = debounce(() => loadItems(), 300);
     watch(() => [filters.q, filters.ext], reloadSoon);
-    watch(() => [filters.flat, filters.kind, filters.minSize, filters.olderThanDays, filters.risk, filters.category, sort.by, sort.desc], () => loadItems());
+    watch(() => [filters.flat, filters.kind, filters.minSize, filters.olderThanDays, filters.risk, filters.category,
+      filters.topLevel, filters.selected, sort.by, sort.desc], () => loadItems());
 
     // 規則變動後重新載入（伺服器會用新的規則重新評估）
     watch(() => props.rulesVersion, async () => {
-      await Promise.all([loadItems(), loadFolderDetail(), loadCategories()]);
+      await Promise.all([loadItems(), loadFolderDetail(), loadCategories(), loadSelection()]);
       if (selectedItem.value) await selectItem(selectedItem.value);
     });
 
@@ -334,7 +368,7 @@ export const ResultView = {
       } catch (err) {
         page.error = err.message;
       }
-      await Promise.all([openFolder(summary.rootId), loadCategories()]);
+      await Promise.all([openFolder(summary.rootId), loadCategories(), loadSelection()]);
     });
 
     function sortMark(column) {
@@ -352,8 +386,9 @@ export const ResultView = {
       scan: props.scan, summary, rootItem, filters, sort, page, detail, folderDetail, selectedItem, breadcrumb,
       hasFilters, showErrors, copied, MIN_SIZES, AGES, KIND_ICONS, FLAG_LABELS,
       RISK_FILTERS, RISK_LABELS, ACTION_LABELS, SOURCE_LABELS, KIND_LABELS, ROLE_LABELS,
-      categories, selection, isChecked, toggle, clearSelection, restoreDefaults, lockReason, riskClass, classificationTitle,
-      autoEnabled, done, planSelection, openPlan, onExecuted, scanId, picks,
+      categories, selection, selectionBusy, headerState, toggle, toggleAll, selectSuggested, clearSelection, showSelected,
+      lockReason, riskClass, classificationTitle, planSelection, openPlan, onExecuted, scanId, activeCategory,
+      selectCategory: () => changeSelection({ action: 'add', filter: currentFilter() }),
       filterCategory, createRule,
       openFolder, selectItem, activate, sortBy, sortMark, resetFilters, copyPath, relativeParent, shell,
       loadMore: () => loadItems(true),
@@ -386,6 +421,7 @@ export const ResultView = {
           <li v-if="summary.errors.length < summary.errorCount" class="muted">…另有 {{ formatNumber(summary.errorCount - summary.errors.length) }} 個未列出</li>
         </ul>
       </div>
+      <p v-if="categories.length" class="hint muted" style="margin:12px 0 0">依規則分類（點一下查看該類別的項目；數字只算最上層，子資料夾不重複計算）：</p>
       <div v-if="categories.length" class="category-bar" aria-label="規則分類">
         <button v-for="c in categories.slice(0, 14)" :key="c.category + c.risk" type="button" class="category-chip"
                 :class="{ active: filters.category === c.category && filters.risk === c.risk }"
@@ -447,11 +483,34 @@ export const ResultView = {
 
         <p v-if="page.error" class="message error">{{ page.error }}</p>
 
+        <div v-if="activeCategory" class="category-banner">
+          <div>
+            <span :class="riskClass(activeCategory)"><span class="risk-dot" aria-hidden="true"></span><span>{{ activeCategory.category }} · {{ RISK_LABELS[activeCategory.risk] }}</span></span>
+            <strong>{{ formatNumber(page.total) }} 項，共 {{ formatBytes(page.sizeInView) }}</strong>
+            <span class="muted">（整次掃描中最上層的項目；子資料夾已經包含在內）</span>
+          </div>
+          <div class="category-banner-actions">
+            <button class="btn small" type="button" :disabled="selectionBusy || page.selectableInView === 0 || headerState === 'all'" @click="selectCategory">
+              {{ page.selectableInView === 0 ? '這一類都不能勾選' : headerState === 'all' ? '已全部勾選' : '勾選這 ' + formatNumber(page.selectableInView) + ' 項' }}
+            </button>
+            <button class="link" type="button" @click="filterCategory(activeCategory)">回到全部</button>
+          </div>
+        </div>
+        <div v-if="filters.selected" class="category-banner">
+          <div><strong>只顯示已勾選的項目</strong> <span class="muted">（整次掃描；資料夾裡的項目已經包含在資料夾中，不另外列出）</span></div>
+          <div class="category-banner-actions"><button class="link" type="button" @click="showSelected">回到全部</button></div>
+        </div>
+
         <div class="table-wrap">
           <table class="items">
             <thead>
               <tr>
-                <th class="check-col"><span class="sr-only">勾選</span></th>
+                <th class="check-col">
+                  <input type="checkbox" :checked="headerState === 'all'" :indeterminate.prop="headerState === 'some'"
+                         :disabled="selectionBusy || page.selectableInView === 0" @change="toggleAll"
+                         :title="headerState === 'all' ? '取消勾選目前條件下的所有項目' : '勾選目前條件下的所有項目（' + formatNumber(page.selectableInView) + ' 項，包含還沒顯示的）'"
+                         aria-label="全選或全不選">
+                </th>
                 <th><button type="button" class="th-btn" @click="sortBy('name')">名稱 {{ sortMark('name') }}</button></th>
                 <th class="hide-sm">分類</th>
                 <th class="num"><button type="button" class="th-btn" @click="sortBy('size')">大小 {{ sortMark('size') }}</button></th>
@@ -461,11 +520,11 @@ export const ResultView = {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in page.items" :key="item.id" :class="{ selected: selectedItem && selectedItem.id === item.id, done: done[item.id] }"
+              <tr v-for="item in page.items" :key="item.id" :class="{ selected: selectedItem && selectedItem.id === item.id, done: item.done }"
                   @click="selectItem(item)" @dblclick="activate(item)" tabindex="0" @keydown.enter="activate(item)">
                 <td class="check-col" @click.stop>
-                  <input type="checkbox" :checked="isChecked(item)" :disabled="!item.selectable || done[item.id]" @change="toggle(item, $event)"
-                         :title="item.selectable && !done[item.id] ? '勾選' : lockReason(item)" :aria-label="'勾選 ' + item.name">
+                  <input type="checkbox" :checked="item.selected" :disabled="!item.selectable || selectionBusy" @change="toggle(item, $event)"
+                         :title="item.selectable ? '勾選' : lockReason(item)" :aria-label="'勾選 ' + item.name">
                 </td>
                 <td class="name-cell">
                   <span class="kind-icon" aria-hidden="true">{{ KIND_ICONS[item.kind] }}</span>
@@ -511,14 +570,20 @@ export const ResultView = {
           <span class="muted">{{ page.loading ? '載入中…' : '共 ' + formatNumber(page.total) + ' 項' + (page.items.length < page.total ? '，已顯示 ' + formatNumber(page.items.length) + ' 項' : '') }}</span>
           <button v-if="page.items.length < page.total" class="btn" type="button" @click="loadMore" :disabled="page.loading">顯示更多</button>
         </div>
-        <div v-if="selection.count > 0 || !autoEnabled" class="selection-bar" role="status">
-          <span v-if="selection.count > 0">已勾選約 <strong>{{ formatNumber(selection.count) }}</strong> 項（約 {{ formatBytes(selection.size) }}）{{ autoEnabled ? '，包含依規則預設勾選、還沒捲動到的項目' : '' }}</span>
-          <span v-else class="muted">沒有勾選任何項目。</span>
-          <button v-if="selection.count > 0" class="btn small primary" type="button" @click="openPlan">建立執行計畫…</button>
-          <button v-if="selection.count > 0" class="link" type="button" @click="clearSelection">全部取消</button>
-          <button v-if="!autoEnabled || Object.keys(picks).length" class="link" type="button" @click="restoreDefaults">恢復預設勾選</button>
+        <div class="selection-bar" role="status">
+          <template v-if="selection.count > 0">
+            <span>已勾選 <strong>{{ formatNumber(selection.count) }}</strong> 項（{{ formatBytes(selection.size) }}）</span>
+            <button class="btn small primary" type="button" @click="openPlan">建立執行計畫…</button>
+            <button class="link" type="button" @click="showSelected">{{ filters.selected ? '回到全部' : '查看已勾選' }}</button>
+            <button class="link" type="button" :disabled="selectionBusy" @click="clearSelection">全部取消</button>
+          </template>
+          <span v-else class="muted">還沒有勾選任何項目。勾選後按「建立執行計畫」，會先預覽，確認後才會處理。</span>
+          <button v-if="selection.suggestedRemaining > 0" class="link" type="button" :disabled="selectionBusy" @click="selectSuggested"
+                  title="勾選規則標示「建議清理」的項目（例如 2 天以上的暫存檔）">
+            {{ selection.suggestedRemaining < selection.suggestedCount ? '再勾選其餘建議清理的項目' : '勾選建議清理的項目' }}（{{ formatNumber(selection.suggestedRemaining) }} 項，{{ formatBytes(selection.suggestedRemainingSize) }}）
+          </button>
         </div>
-        <p class="hint muted">按一下查看詳情；按兩下資料夾可以進入。勾選預設依規則決定；建立執行計畫後會先預覽，確認後才會處理。</p>
+        <p class="hint muted">按一下查看詳情；按兩下資料夾可以進入。表頭的勾選框會套用到目前條件下的所有項目（包含還沒顯示的）。</p>
       </section>
 
       <aside class="card detail-pane" aria-label="項目詳情">
