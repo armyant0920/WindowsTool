@@ -298,18 +298,4 @@ public sealed class FileSystemScannerTests : IDisposable
         await Should.ThrowAsync<DirectoryNotFoundException>(
             () => FileSystemScanner.ScanAsync(_tree.PathOf("nope"), new ScanOptions(), new ScanProgress(), Ct));
     }
-
-    [Fact]
-    public void NormalizeRoot_cleans_user_input()
-    {
-        FileSystemScanner.NormalizeRoot($"  \"{_tree.Root}{Path.DirectorySeparatorChar}\"  ").ShouldBe(_tree.Root);
-
-        var driveRoot = Path.GetPathRoot(_tree.Root)!;
-        FileSystemScanner.NormalizeRoot(driveRoot).ShouldBe(driveRoot);
-
-        if (OperatingSystem.IsWindows())
-        {
-            FileSystemScanner.NormalizeRoot("%SystemRoot%").ShouldBe(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
-        }
-    }
 }

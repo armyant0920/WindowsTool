@@ -1,5 +1,6 @@
+using System.Collections.Concurrent;
 using System.IO.Enumeration;
-using System.Threading.Channels;
+using System.Runtime.ExceptionServices;
 
 namespace WindowsTool.Core.FileSystem;
 
@@ -65,6 +66,7 @@ public interface IWalkHandler<TNode>
 /// 平行目錄走訪器：Scanner 與快速搜尋共用。
 /// <list type="bullet">
 /// <item>以 work-queue 方式非遞迴走訪，目錄層級平行化。</item>
+/// <item>worker 跑在專用執行緒上（不佔用 thread pool），走訪期間 API 與 SSE 仍能即時回應。</item>
 /// <item>Reparse point（Symlink / Junction）不跟進；雲端預留位置照常走訪。</item>
 /// <item>拒絕存取的目錄回報給 handler，不中斷整體走訪。</item>
 /// </list>
@@ -91,7 +93,7 @@ public static class ParallelWalker
         ArgumentNullException.ThrowIfNull(handler);
         ArgumentNullException.ThrowIfNull(options);
 
-        var walk = new Walk<TNode>(handler, options, cancellationToken);
+        using var walk = new Walk<TNode>(handler, options, cancellationToken);
         await walk.RunAsync(new WorkItem<TNode>(rootPath, rootNode, 0)).ConfigureAwait(false);
     }
 
@@ -118,16 +120,16 @@ public static class ParallelWalker
 
     private readonly record struct WorkItem<TNode>(string Path, TNode Node, int Depth);
 
-    private sealed class Walk<TNode>
+    private sealed class Walk<TNode> : IDisposable
     {
         private readonly IWalkHandler<TNode> _handler;
         private readonly WalkOptions _options;
         private readonly CancellationToken _cancellationToken;
         private readonly EnumerationOptions _enumerationOptions;
         private readonly HashSet<string> _excluded;
-        private readonly Channel<WorkItem<TNode>> _queue = Channel.CreateUnbounded<WorkItem<TNode>>(
-            new UnboundedChannelOptions { SingleReader = false, SingleWriter = false });
+        private readonly BlockingCollection<WorkItem<TNode>> _queue = new(new ConcurrentQueue<WorkItem<TNode>>());
         private int _pending;
+        private Exception? _failure;
 
         public Walk(IWalkHandler<TNode> handler, WalkOptions options, CancellationToken cancellationToken)
         {
@@ -160,31 +162,40 @@ public static class ParallelWalker
         public async Task RunAsync(WorkItem<TNode> root)
         {
             _pending = 1;
-            _queue.Writer.TryWrite(root);
+            _queue.Add(root);
 
             var parallelism = _options.MaxDegreeOfParallelism > 0
                 ? _options.MaxDegreeOfParallelism
                 : GetDefaultParallelism(root.Path);
 
+            // 目錄列舉是同步 I/O；用 LongRunning 開專用執行緒，避免把 thread pool 佔滿
             var workers = new Task[parallelism];
             for (var i = 0; i < workers.Length; i++)
             {
-                workers[i] = Task.Run(WorkerAsync, CancellationToken.None);
+                workers[i] = Task.Factory.StartNew(
+                    Worker, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
             }
 
             await Task.WhenAll(workers).ConfigureAwait(false);
+
+            if (_failure is not null)
+            {
+                ExceptionDispatchInfo.Throw(_failure);
+            }
+
             _cancellationToken.ThrowIfCancellationRequested();
         }
 
-        private async Task WorkerAsync()
+        public void Dispose() => _queue.Dispose();
+
+        private void Worker()
         {
             try
             {
-                await foreach (var item in _queue.Reader.ReadAllAsync(_cancellationToken).ConfigureAwait(false))
+                foreach (var item in _queue.GetConsumingEnumerable(_cancellationToken))
                 {
                     try
                     {
-                        // ReadAllAsync 只有在需要等待時才檢查取消；佇列裡還有項目時要自己檢查
                         _cancellationToken.ThrowIfCancellationRequested();
                         ProcessDirectory(item);
                     }
@@ -192,16 +203,21 @@ public static class ParallelWalker
                     {
                         if (Interlocked.Decrement(ref _pending) == 0)
                         {
-                            _queue.Writer.TryComplete();
+                            _queue.CompleteAdding();
                         }
                     }
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException)
             {
-                // 讓其他 worker 也停下來，不要永遠等待
-                _queue.Writer.TryComplete(ex);
-                throw;
+                // 取消：RunAsync 會統一拋出 OperationCanceledException
+            }
+#pragma warning disable CA1031 // 記錄第一個例外，並讓其他 worker 停下來，不要永遠等待
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                Interlocked.CompareExchange(ref _failure, ex, null);
+                _queue.CompleteAdding();
             }
         }
 
@@ -249,7 +265,7 @@ public static class ParallelWalker
             foreach (var sub in subdirectories)
             {
                 Interlocked.Increment(ref _pending);
-                _queue.Writer.TryWrite(sub);
+                _queue.Add(sub);
             }
         }
 

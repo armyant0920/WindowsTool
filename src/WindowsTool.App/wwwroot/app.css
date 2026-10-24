@@ -307,3 +307,45 @@ table.items { width: 100%; border-collapse: collapse; }
   .drive-chip { grid-template-columns: auto 60px; }
   .drive-size { display: none; }
 }
+
+/* ---- 快速搜尋 ------------------------------------------------------------ */
+.search-input { flex: 1; padding: 8px 12px; font-size: 15px; }
+.root-name { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.root-input { flex: 1 1 220px; font-size: 13px; padding: 4px 10px; }
+.toggle-chip {
+  border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 3px 12px; cursor: pointer;
+}
+.toggle-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.advanced summary .badge { margin-left: 8px; border-color: var(--accent); color: var(--accent); }
+.range-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.num-input { width: 100px; }
+
+.search-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.search-actions { display: flex; gap: 8px; }
+.search-actions .input { width: 220px; }
+.error-text { color: var(--error); }
+
+table.hits .dir-cell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+table.hits .actions-col { width: 1%; text-align: right; }
+table.hits .actions-col .link { margin-left: 8px; font-size: 12px; visibility: hidden; }
+table.hits tr:hover .actions-col .link,
+table.hits tr.selected .actions-col .link,
+table.hits tr:focus-within .actions-col .link { visibility: visible; }
+.show-sm { display: none; }
+
+.detail-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0;
+}
+
+@media (max-width: 760px) {
+  .show-sm { display: block; }
+  .search-actions { width: 100%; }
+  .search-actions .input { flex: 1; width: auto; }
+  table.hits .actions-col .link { visibility: visible; }
+}
+
+@media (hover: none) {
+  table.hits .actions-col .link { visibility: visible; }
+}

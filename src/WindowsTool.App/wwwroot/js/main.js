@@ -5,13 +5,18 @@ import { ScanForm, rememberRoot } from './components/scan-form.js';
 import { ScanProgressView } from './components/scan-progress.js';
 import { ResultView } from './components/result-view.js';
 import { TreeNode } from './components/tree-node.js';
+import { SearchView } from './components/search-view.js';
 
 const { createApp, ref, onMounted } = Vue;
 
 const App = {
-  components: { ScanForm, ScanProgressView, ResultView },
+  components: { ScanForm, ScanProgressView, ResultView, SearchView },
   setup() {
-    const view = ref('home'); // home | scanning | results
+    const TAB_KEY = 'windowstool.tab';
+    let initialTab = 'scan';
+    try { initialTab = localStorage.getItem(TAB_KEY) === 'search' ? 'search' : 'scan'; } catch { /* 預設磁碟掃描 */ }
+    const tab = ref(initialTab); // scan | search
+    const view = ref('home'); // 磁碟掃描的畫面：home | scanning | results
     const system = ref(null);
     const fatal = ref(null);
     const notice = ref(null);
@@ -101,7 +106,12 @@ const App = {
       }
     }
 
-    return { view, system, fatal, notice, scan, resultKey, startScan, cancelScan, newScan, rescan };
+    function switchTab(name) {
+      tab.value = name;
+      try { localStorage.setItem(TAB_KEY, name); } catch { /* 無法儲存就算了 */ }
+    }
+
+    return { tab, view, system, fatal, notice, scan, resultKey, startScan, cancelScan, newScan, rescan, switchTab };
   },
   template: `
     <header class="topbar">
@@ -111,8 +121,8 @@ const App = {
         <span v-if="system" class="muted version">v{{ system.version }}</span>
       </div>
       <nav class="tabs" aria-label="功能">
-        <button type="button" class="tab active" aria-current="page">磁碟掃描</button>
-        <button type="button" class="tab" disabled title="即將推出（Phase 1.5）">快速搜尋</button>
+        <button type="button" class="tab" :class="{ active: tab === 'scan' }" :aria-current="tab === 'scan' ? 'page' : undefined" @click="switchTab('scan')">磁碟掃描</button>
+        <button type="button" class="tab" :class="{ active: tab === 'search' }" :aria-current="tab === 'search' ? 'page' : undefined" @click="switchTab('search')">快速搜尋</button>
       </nav>
       <span v-if="system" class="muted env">{{ system.system.isElevated ? '系統管理員' : '一般權限' }}</span>
     </header>
@@ -120,10 +130,16 @@ const App = {
     <main class="page">
       <section v-if="fatal" class="card"><p class="message error">{{ fatal }}</p></section>
       <template v-else>
-        <p v-if="notice" class="message" :class="notice.kind">{{ notice.text }}</p>
-        <scan-form v-if="view === 'home'" :drives="system ? system.system.drives : []" :start="startScan" />
-        <scan-progress-view v-else-if="view === 'scanning' && scan" :scan="scan" :cancel="cancelScan" />
-        <result-view v-else-if="view === 'results' && scan" :key="resultKey" :scan="scan" @new-scan="newScan" @rescan="rescan" />
+        <!-- 用 v-show 切換，兩邊的狀態（掃描結果、搜尋結果）都會保留 -->
+        <div v-show="tab === 'scan'">
+          <p v-if="notice" class="message" :class="notice.kind">{{ notice.text }}</p>
+          <scan-form v-if="view === 'home'" :drives="system ? system.system.drives : []" :start="startScan" />
+          <scan-progress-view v-else-if="view === 'scanning' && scan" :scan="scan" :cancel="cancelScan" />
+          <result-view v-else-if="view === 'results' && scan" :key="resultKey" :scan="scan" @new-scan="newScan" @rescan="rescan" />
+        </div>
+        <div v-show="tab === 'search'">
+          <search-view :drives="system ? system.system.drives : []" />
+        </div>
       </template>
     </main>
   `,

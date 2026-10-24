@@ -1,8 +1,7 @@
+using WindowsTool.App.Common;
 using WindowsTool.Core.Scanning;
 
 namespace WindowsTool.App.Scans;
-
-public sealed record ErrorResponse(string Error);
 
 public sealed record StartScanRequest(
     string? Root,

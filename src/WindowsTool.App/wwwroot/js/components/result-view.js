@@ -150,6 +150,16 @@ export const ResultView = {
       Object.assign(filters, { kind: 'any', minSize: null, q: '', ext: '', olderThanDays: null });
     }
 
+    async function shell(action) {
+      if (!detail.value) return;
+      page.error = null;
+      try {
+        await api(`/api/shell/${action}`, { method: 'POST', body: { scanId, itemId: detail.value.item.id } });
+      } catch (err) {
+        page.error = err.message;
+      }
+    }
+
     async function copyPath(path) {
       try {
         await navigator.clipboard.writeText(path);
@@ -195,7 +205,7 @@ export const ResultView = {
     return {
       scan: props.scan, summary, rootItem, filters, sort, page, detail, folderDetail, selectedItem, breadcrumb,
       hasFilters, showErrors, copied, MIN_SIZES, AGES, KIND_ICONS, FLAG_LABELS,
-      openFolder, selectItem, activate, sortBy, sortMark, resetFilters, copyPath, relativeParent,
+      openFolder, selectItem, activate, sortBy, sortMark, resetFilters, copyPath, relativeParent, shell,
       loadMore: () => loadItems(true),
       formatBytes, formatNumber, formatDate, formatDuration, formatPercent, extLabel,
     };
@@ -325,7 +335,11 @@ export const ResultView = {
         <template v-if="detail">
           <h3 class="detail-name"><span aria-hidden="true">{{ KIND_ICONS[detail.item.kind] }}</span> {{ detail.item.name }}</h3>
           <p class="mono detail-path">{{ detail.item.path }}</p>
-          <button class="btn small" type="button" @click="copyPath(detail.item.path)">{{ copied ? '已複製' : '複製路徑' }}</button>
+          <div class="detail-actions">
+            <button class="btn small" type="button" @click="shell('reveal')">在檔案總管中顯示</button>
+            <button class="btn small" type="button" @click="shell('open')">開啟</button>
+            <button class="btn small" type="button" @click="copyPath(detail.item.path)">{{ copied ? '已複製' : '複製路徑' }}</button>
+          </div>
 
           <dl class="detail-list">
             <dt>大小</dt><dd>{{ formatBytes(detail.item.size) }} <small class="muted">（{{ formatNumber(detail.item.size) }} bytes）</small></dd>
