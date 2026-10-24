@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Http.HttpResults;
 using WindowsTool.App.Common;
 using WindowsTool.App.Scans;
+using WindowsTool.Core.Rules;
 using WindowsTool.Core.Scanning;
 
 namespace WindowsTool.App.Endpoints;
@@ -19,7 +20,10 @@ public readonly record struct ItemsQueryParameters(
     string? Sort,
     string? Order,
     int? Offset,
-    int? Limit);
+    int? Limit,
+    string? Risk,
+    string? Category,
+    string? Source);
 
 public static class ScanEndpoints
 {
@@ -34,6 +38,7 @@ public static class ScanEndpoints
         scans.MapDelete("/{id}", Delete);
         scans.MapGet("/{id}/items", Items);
         scans.MapGet("/{id}/items/{itemId:int}", Item);
+        scans.MapGet("/{id}/categories", Categories);
         return app;
     }
 
@@ -100,14 +105,15 @@ public static class ScanEndpoints
         manager.Remove(id) ? TypedResults.NoContent() : TypedResults.NotFound();
 
     private static Results<Ok<ItemPageDto>, NotFound<ErrorResponse>, Conflict<ErrorResponse>, BadRequest<ErrorResponse>> Items(
-        string id, [AsParameters] ItemsQueryParameters p, ScanManager manager)
+        string id, [AsParameters] ItemsQueryParameters p, ScanManager manager, RuleStore rules)
     {
-        if (!TryGetResult(id, manager, out var result, out var notFound, out var conflict))
+        if (!TryGetResult(id, manager, out var session, out var result, out var notFound, out var conflict))
         {
             return notFound is not null ? notFound : conflict!;
         }
 
-        if (!TryBuildQuery(p, out var query, out var error))
+        var evaluation = session.GetEvaluation(rules.Current);
+        if (!TryBuildQuery(p, evaluation, out var query, out var error))
         {
             return TypedResults.BadRequest(new ErrorResponse(error));
         }
@@ -117,8 +123,8 @@ public static class ScanEndpoints
             var page = ScanQuery.Run(result, query, DateTime.UtcNow);
             var parent = query.ParentId is { } parentId ? result.Find(parentId) as DirNode : result.Root;
             return TypedResults.Ok(new ItemPageDto(
-                parent?.ToDto(),
-                [.. page.Items.Select(i => i.ToDto())],
+                parent?.ToDto(evaluation),
+                [.. page.Items.Select(i => i.ToDto(evaluation))],
                 page.Total,
                 query.Flat ? null : parent?.OtherFiles()));
         }
@@ -129,9 +135,9 @@ public static class ScanEndpoints
     }
 
     private static Results<Ok<ItemDetailDto>, NotFound<ErrorResponse>, Conflict<ErrorResponse>> Item(
-        string id, int itemId, ScanManager manager)
+        string id, int itemId, ScanManager manager, RuleStore rules)
     {
-        if (!TryGetResult(id, manager, out var result, out var notFound, out var conflict))
+        if (!TryGetResult(id, manager, out var session, out var result, out var notFound, out var conflict))
         {
             return notFound is not null ? notFound : conflict!;
         }
@@ -152,37 +158,60 @@ public static class ScanEndpoints
             ? []
             : ScanResult.GetSubtreeExtStats(dir).Select(e => new ExtStatDto(e.Ext, e.Count, e.Size)).ToList();
 
-        return TypedResults.Ok(new ItemDetailDto(node.ToDto(), ancestors, extStats, dir?.OtherFiles()));
+        var snapshot = rules.Current;
+        var evaluation = session.GetEvaluation(snapshot);
+        var hits = RuleEngine.Explain(result, snapshot.Set, new FileSystemEntryProbe(), DateTime.UtcNow, itemId)
+            .Select(h => new RuleHitDto(h.Rule.Id, h.Rule.Name, h.Rule.Kind, h.Rule.Source, h.Inherited, h.Role))
+            .OrderBy(h => h.Role)
+            .ToList();
+
+        return TypedResults.Ok(new ItemDetailDto(node.ToDto(evaluation), ancestors, extStats, dir?.OtherFiles(), hits));
+    }
+
+    private static Results<Ok<CategoriesDto>, NotFound<ErrorResponse>, Conflict<ErrorResponse>> Categories(
+        string id, ScanManager manager, RuleStore rules)
+    {
+        if (!TryGetResult(id, manager, out var session, out _, out var notFound, out var conflict))
+        {
+            return notFound is not null ? notFound : conflict!;
+        }
+
+        var snapshot = rules.Current;
+        var evaluation = session.GetEvaluation(snapshot)!;
+        return TypedResults.Ok(new CategoriesDto(snapshot.Version, (long)evaluation.Duration.TotalMilliseconds, evaluation.Categories));
     }
 
     private static bool TryGetResult(
         string id,
         ScanManager manager,
+        out ScanSession session,
         out ScanResult result,
         out NotFound<ErrorResponse>? notFound,
         out Conflict<ErrorResponse>? conflict)
     {
+        session = null!;
         result = null!;
         notFound = null;
         conflict = null;
 
-        if (manager.Get(id) is not { } session)
+        if (manager.Get(id) is not { } found)
         {
             notFound = TypedResults.NotFound(new ErrorResponse("找不到這次掃描，可能已經被清除。"));
             return false;
         }
 
-        if (session.Status != ScanStatus.Completed || session.Result is null)
+        if (found.Status != ScanStatus.Completed || found.Result is null)
         {
             conflict = TypedResults.Conflict(new ErrorResponse("掃描尚未完成。"));
             return false;
         }
 
-        result = session.Result;
+        session = found;
+        result = found.Result;
         return true;
     }
 
-    private static bool TryBuildQuery(ItemsQueryParameters p, out ItemQuery query, out string error)
+    private static bool TryBuildQuery(ItemsQueryParameters p, RuleEvaluation? evaluation, out ItemQuery query, out string error)
     {
         query = null!;
         error = "";
@@ -217,8 +246,14 @@ public static class ScanEndpoints
             default: error = $"不支援的 order：{p.Order}"; return false;
         }
 
+        if (!TryBuildRuleFilter(p, evaluation, out var where, out error))
+        {
+            return false;
+        }
+
         query = new ItemQuery
         {
+            Where = where,
             ParentId = p.ParentId,
             Flat = p.Flat ?? false,
             Kind = kind,
@@ -234,6 +269,79 @@ public static class ScanEndpoints
             Limit = p.Limit ?? 200,
         };
 
+        return true;
+    }
+
+    /// <summary>依規則標註篩選：risk（可多選，unknown = 未分類）、category、source（none = 未分類）。</summary>
+    private static bool TryBuildRuleFilter(
+        ItemsQueryParameters p, RuleEvaluation? evaluation, out Func<ScanNode, bool>? where, out string error)
+    {
+        where = null;
+        error = "";
+
+        HashSet<RiskLevel>? risks = null;
+        if (!string.IsNullOrWhiteSpace(p.Risk))
+        {
+            risks = [];
+            foreach (var value in p.Risk.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                RiskLevel? risk = value.ToLowerInvariant() switch
+                {
+                    "unknown" => RiskLevel.Unknown,
+                    "low" => RiskLevel.Low,
+                    "medium" => RiskLevel.Medium,
+                    "high" => RiskLevel.High,
+                    "protected" => RiskLevel.Protected,
+                    _ => null,
+                };
+                if (risk is null)
+                {
+                    error = $"不支援的 risk：{value}";
+                    return false;
+                }
+
+                risks.Add(risk.Value);
+            }
+        }
+
+        RuleSource? source = null;
+        var unclassifiedOnly = false;
+        switch (p.Source?.ToLowerInvariant())
+        {
+            case null or "": break;
+            case "builtin": source = RuleSource.Builtin; break;
+            case "user": source = RuleSource.User; break;
+            case "ai": source = RuleSource.Ai; break;
+            case "none": unclassifiedOnly = true; break;
+            default: error = $"不支援的 source：{p.Source}"; return false;
+        }
+
+        var category = string.IsNullOrWhiteSpace(p.Category) ? null : p.Category.Trim();
+        if (risks is null && source is null && !unclassifiedOnly && category is null)
+        {
+            return true;
+        }
+
+        where = node =>
+        {
+            var c = evaluation?.Get(node.Id);
+            if (risks is not null && !risks.Contains(c?.Risk ?? RiskLevel.Unknown))
+            {
+                return false;
+            }
+
+            if (unclassifiedOnly && c is not null)
+            {
+                return false;
+            }
+
+            if (source is not null && c?.Source != source)
+            {
+                return false;
+            }
+
+            return category is null || c?.Category == category;
+        };
         return true;
     }
 }

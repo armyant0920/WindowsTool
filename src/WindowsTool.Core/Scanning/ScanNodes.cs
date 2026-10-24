@@ -1,11 +1,18 @@
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace WindowsTool.Core.Scanning;
 
+[JsonConverter(typeof(JsonStringEnumConverter<ScanItemKind>))]
 public enum ScanItemKind
 {
+    [JsonStringEnumMemberName("dir")]
     Dir,
+
+    [JsonStringEnumMemberName("file")]
     File,
+
+    [JsonStringEnumMemberName("link")]
     Link,
 }
 

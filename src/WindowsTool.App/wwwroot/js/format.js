@@ -60,3 +60,29 @@ export function extLabel(ext) {
   if (ext === '') return '（無副檔名）';
   return ext.toLowerCase();
 }
+
+// ---- 規則標註 ----------------------------------------------------------------
+
+export const RISK_LABELS = {
+  protected: '受保護',
+  high: '高風險',
+  medium: '中風險',
+  low: '低風險',
+  unknown: '未分類',
+};
+
+/** 排序用：數字越大越危險。 */
+export const RISK_ORDER = { unknown: 0, low: 1, medium: 2, high: 3, protected: 4 };
+
+export const ACTION_LABELS = {
+  keep: '保留',
+  review: '人工確認',
+  recycle: '移到資源回收筒',
+  quarantine: '移到隔離區',
+  delete: '永久刪除',
+  command: '執行清理命令',
+};
+
+export const SOURCE_LABELS = { builtin: '內建', user: '自訂', ai: 'AI' };
+
+export const KIND_LABELS = { classify: '分類', protect: '保護', caution: '提醒' };

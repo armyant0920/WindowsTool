@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "caution-git",
+      "name": ".git 版本庫",
+      "source": "builtin",
+      "kind": "caution",
+      "match": { "kind": "dir", "pathGlob": ["**/.git"] },
+      "result": { "category": "版本庫", "risk": "high", "reason": "Git 版本紀錄；尚未推送的 commit 刪除後無法復原。" }
+    },
+    {
+      "id": "dev-node-modules",
+      "name": "node_modules",
+      "source": "builtin",
+      "match": { "kind": "dir", "pathGlob": ["**/node_modules"], "siblingExists": ["package.json"] },
+      "result": {
+        "category": "可重建的相依套件",
+        "risk": "low",
+        "suggestedAction": "recycle",
+        "reason": "Node.js 專案的相依套件，可以用 npm install 重建。"
+      }
+    },
+    {
+      "id": "dev-dotnet-binobj",
+      "name": ".NET 建置輸出",
+      "source": "builtin",
+      "match": {
+        "kind": "dir",
+        "pathGlob": ["**/bin", "**/obj"],
+        "siblingExists": ["*.csproj", "*.fsproj", "*.vbproj"]
+      },
+      "result": {
+        "category": "建置輸出",
+        "risk": "low",
+        "suggestedAction": "recycle",
+        "reason": ".NET 專案的 bin / obj 資料夾，重新建置就會產生。"
+      }
+    },
+    {
+      "id": "dev-vs-cache",
+      "name": "Visual Studio 暫存",
+      "source": "builtin",
+      "match": { "kind": "dir", "pathGlob": ["**/.vs"], "siblingExists": ["*.sln", "*.slnx"] },
+      "result": {
+        "category": "IDE 暫存",
+        "risk": "low",
+        "suggestedAction": "recycle",
+        "reason": "Visual Studio 的方案暫存（IntelliSense 資料庫、視窗配置），關閉 Visual Studio 後可以刪除，下次開啟會重建。"
+      }
+    },
+    {
+      "id": "log-old",
+      "name": "舊的大型記錄檔",
+      "source": "builtin",
+      "match": { "kind": "file", "pathGlob": ["**/*.log"], "minAgeDays": 90, "minSize": 10485760 },
+      "result": {
+        "category": "舊記錄檔",
+        "risk": "medium",
+        "suggestedAction": "review",
+        "reason": "90 天以上沒有更新、超過 10 MB 的記錄檔。"
+      }
+    }
+  ]
+}

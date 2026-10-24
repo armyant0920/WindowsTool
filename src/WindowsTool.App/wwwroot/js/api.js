@@ -21,9 +21,11 @@ const token = readToken();
 export const hasToken = Boolean(token);
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  /** body：伺服器回傳的 JSON（例如規則驗證失敗時的詳細結果）。 */
+  constructor(message, status, body = null) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -56,7 +58,7 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
 
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(data?.error ?? `伺服器回應錯誤（HTTP ${response.status}）`, response.status);
+    throw new ApiError(data?.error ?? `伺服器回應錯誤（HTTP ${response.status}）`, response.status, data);
   }
   return data;
 }

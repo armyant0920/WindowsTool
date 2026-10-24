@@ -1,4 +1,5 @@
 using WindowsTool.App.Common;
+using WindowsTool.Core.Rules;
 using WindowsTool.Core.Scanning;
 
 namespace WindowsTool.App.Scans;
@@ -50,7 +51,11 @@ public sealed record ScanItemDto(
     DateTime NewestWriteUtc,
     IReadOnlyList<string> Flags,
     int DeniedCount,
-    bool HasChildren);
+    bool HasChildren,
+    Classification? Classification,
+    bool Selectable,
+    bool AutoSelected,
+    bool ContainsProtected);
 
 public sealed record OtherFilesDto(int Count, long Size);
 
@@ -64,11 +69,17 @@ public sealed record ExtStatDto(string Ext, int Count, long Size);
 
 public sealed record AncestorDto(int Id, string Name);
 
+public sealed record RuleHitDto(string Id, string Name, RuleKind Kind, RuleSource Source, bool Inherited, RuleHitRole Role);
+
 public sealed record ItemDetailDto(
     ScanItemDto Item,
     IReadOnlyList<AncestorDto> Ancestors,
     IReadOnlyList<ExtStatDto> ExtStats,
-    OtherFilesDto? OtherFiles);
+    OtherFilesDto? OtherFiles,
+    IReadOnlyList<RuleHitDto> Rules);
+
+/// <summary>各類別的統計（只計算上層沒有同類別的項目；不同類別之間大小可能重疊）。</summary>
+public sealed record CategoriesDto(long RulesVersion, long EvaluationMs, IReadOnlyList<CategorySummary> Categories);
 
 public static class ScanDtoMapper
 {
@@ -113,7 +124,7 @@ public static class ScanDtoMapper
             session.Error);
     }
 
-    public static ScanItemDto ToDto(this ScanNode node)
+    public static ScanItemDto ToDto(this ScanNode node, RuleEvaluation? evaluation)
     {
         var dir = node as DirNode;
         return new ScanItemDto(
@@ -134,7 +145,11 @@ public static class ScanDtoMapper
             node.NewestWriteUtc,
             FlagNames(node.Flags),
             dir?.DeniedCount ?? 0,
-            dir?.HasChildren ?? false);
+            dir?.HasChildren ?? false,
+            evaluation?.Get(node.Id),
+            evaluation?.IsSelectable(node.Id) ?? true,
+            evaluation?.IsAutoSelected(node.Id) ?? false,
+            evaluation?.ContainsProtected(node.Id) ?? false);
     }
 
     public static OtherFilesDto? OtherFiles(this DirNode dir) =>

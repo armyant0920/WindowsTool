@@ -1,5 +1,6 @@
 using WindowsTool.App.Common;
 using WindowsTool.Core.FileSystem;
+using WindowsTool.Core.Rules;
 using WindowsTool.Core.Scanning;
 
 namespace WindowsTool.App.Scans;
@@ -18,8 +19,13 @@ public sealed class ScanSession : IBackgroundSession
     private readonly CancellationTokenSource _cts = new();
     private readonly System.Diagnostics.Stopwatch _stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-    internal ScanSession(string id, string root, ScanOptions options, long? expectedBytes)
+    private readonly Func<RuleSnapshot>? _rules;
+    private readonly Lock _evaluationLock = new();
+    private (long Version, RuleEvaluation Evaluation)? _evaluation;
+
+    internal ScanSession(string id, string root, ScanOptions options, long? expectedBytes, Func<RuleSnapshot>? rules = null)
     {
+        _rules = rules;
         Id = id;
         Root = root;
         Options = options;
@@ -77,6 +83,12 @@ public sealed class ScanSession : IBackgroundSession
         try
         {
             Result = await FileSystemScanner.ScanAsync(Root, Options, Progress, _cts.Token).ConfigureAwait(false);
+            if (_rules is not null)
+            {
+                // 掃描完成時先套用規則，第一次查詢清單就不用等
+                Evaluate(_rules(), _cts.Token);
+            }
+
             final = ScanStatus.Completed;
         }
         catch (OperationCanceledException)
@@ -97,6 +109,31 @@ public sealed class ScanSession : IBackgroundSession
         }
     }
 
+    /// <summary>
+    /// 以指定版本的規則評估掃描結果；同一個版本只計算一次，規則變動後再查詢時重新計算。
+    /// 掃描尚未完成時回傳 null。
+    /// </summary>
+    public RuleEvaluation? GetEvaluation(RuleSnapshot rules)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+        return Result is null ? null : Evaluate(rules, CancellationToken.None);
+    }
+
+    private RuleEvaluation Evaluate(RuleSnapshot rules, CancellationToken cancellationToken)
+    {
+        lock (_evaluationLock)
+        {
+            if (_evaluation is { } cached && cached.Version == rules.Version)
+            {
+                return cached.Evaluation;
+            }
+
+            var evaluation = RuleEngine.Evaluate(Result!, rules.Set, new FileSystemEntryProbe(), DateTime.UtcNow, cancellationToken);
+            _evaluation = (rules.Version, evaluation);
+            return evaluation;
+        }
+    }
+
     public void Dispose() => _cts.Dispose();
 }
 
@@ -106,6 +143,12 @@ public sealed class ScanManager : IDisposable
     public const int MaxSessions = 3;
 
     private readonly SessionStore<ScanSession> _store = new(MaxSessions);
+    private readonly RuleStore? _rules;
+
+    public ScanManager(RuleStore? rules = null)
+    {
+        _rules = rules;
+    }
 
     public ScanSession Start(string root, ScanOptions options)
     {
@@ -116,7 +159,8 @@ public sealed class ScanManager : IDisposable
         }
 
         var expected = GetExpectedBytes(normalized);
-        return _store.Add(id => new ScanSession(id, normalized, options, expected));
+        Func<RuleSnapshot>? rules = _rules is null ? null : () => _rules.Current;
+        return _store.Add(id => new ScanSession(id, normalized, options, expected, rules));
     }
 
     public ScanSession? Get(string id) => _store.Get(id);

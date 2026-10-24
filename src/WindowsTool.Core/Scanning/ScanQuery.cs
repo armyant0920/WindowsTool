@@ -37,6 +37,9 @@ public sealed record ItemQuery
     /// <summary>超過 N 天沒有修改（目錄以子樹中最新的檔案為準）。</summary>
     public int? OlderThanDays { get; init; }
 
+    /// <summary>額外的條件（例如依規則標註的風險、類別篩選）。</summary>
+    public Func<ScanNode, bool>? Where { get; init; }
+
     public ItemSort Sort { get; init; } = ItemSort.Size;
 
     public bool Descending { get; init; } = true;
@@ -145,7 +148,7 @@ public static class ScanQuery
                 return false;
             }
 
-            return true;
+            return query.Where is null || query.Where(node);
         };
     }
 
