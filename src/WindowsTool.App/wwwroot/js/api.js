@@ -104,3 +104,26 @@ export async function* sse(path, signal) {
     reader.releaseLock();
   }
 }
+
+/** 下載檔案（例如 CSV）：用 fetch 帶 token 取得內容，再交給瀏覽器存檔。 */
+export async function download(path) {
+  const response = await fetch(path, { headers: headers() });
+  if (response.status === 401) throw new ApiError(EXPIRED, 401);
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new ApiError(data?.error ?? `下載失敗（HTTP ${response.status}）`, response.status);
+  }
+
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const match = /filename\*=UTF-8''([^;]+)/i.exec(disposition) ?? /filename="?([^";]+)"?/i.exec(disposition);
+  const fileName = match ? decodeURIComponent(match[1]) : 'download';
+
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}

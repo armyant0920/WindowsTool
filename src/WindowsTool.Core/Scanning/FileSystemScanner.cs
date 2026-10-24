@@ -17,25 +17,6 @@ public static class FileSystemScanner
     private const int ExtStatsPerDirectory = 8;
     private const int ProgressFlushInterval = 4096;
 
-    /// <summary>檢查並正規化使用者輸入的根路徑（去掉引號、展開環境變數、轉成完整路徑）。</summary>
-    public static string NormalizeRoot(string root)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(root);
-
-        var trimmed = root.Trim().Trim('"').Trim();
-        var expanded = Environment.ExpandEnvironmentVariables(trimmed);
-        var full = Path.GetFullPath(expanded);
-
-        // 去掉結尾的分隔符號，但保留磁碟根目錄（C:\、/）
-        var pathRoot = Path.GetPathRoot(full);
-        if (full.Length > (pathRoot?.Length ?? 0))
-        {
-            full = Path.TrimEndingDirectorySeparator(full);
-        }
-
-        return full;
-    }
-
     public static async Task<ScanResult> ScanAsync(
         string root,
         ScanOptions options,
@@ -45,7 +26,7 @@ public static class FileSystemScanner
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(progress);
 
-        var rootPath = NormalizeRoot(root);
+        var rootPath = PathUtil.NormalizeUserPath(root);
         if (!Directory.Exists(rootPath))
         {
             throw new DirectoryNotFoundException($"找不到資料夾：{rootPath}");

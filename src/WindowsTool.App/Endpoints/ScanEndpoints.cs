@@ -1,6 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using Microsoft.AspNetCore.Http.HttpResults;
+using WindowsTool.App.Common;
 using WindowsTool.App.Scans;
 using WindowsTool.Core.Scanning;
 

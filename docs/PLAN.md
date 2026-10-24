@@ -367,24 +367,34 @@ WindowsTool/
 - **操作**（唯讀為主）：開啟檔案、**在檔案總管中顯示**（`explorer.exe /select,"<path>"`）、複製路徑、匯出 CSV。
 - 搜尋頁**不提供刪除**。Phase 3 之後可以加上「加入執行計畫」，但必須走第 10 節的 Plan → dry-run → 確認流程，保護規則一樣有效。
 - 最近使用的搜尋條件可以儲存（`settings.json` 的 `recentSearches`）。
+  → **Phase 1.5 實作**：存在瀏覽器的 `localStorage`（個人便利功能，和最近使用的掃描位置一致）。
+- **Phase 1.5 定案的預設值**：包含隱藏檔、**不含系統檔**（避免 `desktop.ini`、`Thumbs.db` 干擾，和檔案總管一致）；略過 `$Recycle.Bin`、`System Volume Information`；沒有記錄時預設搜尋第一個磁碟。
+- **條件語法（一般模式）**：含 `*` 或 `?` 時視為萬用字元，以 `;` 分隔多個樣式（任一符合）；否則以空白分隔關鍵字（全部都要出現）。設定副檔名或大小條件時只會找到檔案。
+- **「開啟」的安全限制**：程式與指令碼（`.exe`、`.bat`、`.ps1`、`.lnk`、`.msi` 等）不能從 UI 直接開啟，只能「在檔案總管中顯示」。
 
 ### 9A.3 實作要點
 - 用 `FileSystemEnumerable<T>` 自訂 `ShouldIncludePredicate` / `ShouldRecursePredicate`，直接在 `FileSystemEntry`（`ReadOnlySpan<char>` 檔名）上比對，**不符合的項目不配置字串**，降低 GC 壓力。
 - `EnumerationOptions`：`IgnoreInaccessible = true`、`AttributesToSkip` 依「隱藏 / 系統」選項設定、不跟進 reparse point。
 - 和 Scanner 共用 `ParallelWalker`：目錄層級平行化（`MaxDegreeOfParallelism` 預設等於 CPU 核心數，網路磁碟降為 2）。
 - 萬用字元轉成預先編譯的比對器（不要每筆都建 Regex）；正規表示式使用 `RegexOptions.Compiled | CultureInvariant`，並設比對逾時。
+  → **Phase 1.5 實作**：萬用字元用內建的 `FileSystemName.MatchesSimpleExpression`（直接比對 span）；正規表示式改用 `RegexOptions.NonBacktracking`，保證線性時間，不需要逾時。比對完整路徑時在每條執行緒共用的緩衝區組出路徑，一樣不配置字串。
+- **Thread pool 飢餓（Phase 1.5 修正，同時影響掃描器）**：走訪是同步 I/O，原本的 worker 跑在 thread pool 上會把它佔滿，導致走訪期間 SSE 與 API 回應延遲（實測第一筆結果要等到快結束才出現）。改為每個 worker 一條專用執行緒（`TaskCreationOptions.LongRunning` + `BlockingCollection`）後，第一筆結果在數毫秒內出現。
 - **Phase 7 加速**：系統管理員 + NTFS 時，改讀 MFT，整顆磁碟的檔名搜尋可以在數秒內完成（類似 Everything）；選用 USN Journal 增量更新索引。一般模式永遠可用，作為 fallback。
 
 ### 9A.4 API
 
 ```
-POST   /api/search                       # { roots[], query } → { searchId }
-GET    /api/search/{id}/events           # SSE：結果批次 + 進度（已走訪目錄數、目前路徑）+ 完成 / 截斷
-DELETE /api/search/{id}                  # 取消
-POST   /api/search/{id}/export           # 匯出 CSV
-POST   /api/shell/reveal                 # { path } → 在檔案總管中顯示（只接受搜尋或掃描結果中出現過的路徑）
-POST   /api/shell/open                   # { path } → 用預設程式開啟（同上限制）
+POST   /api/search                       # { roots[], pattern, mode, kind, extensions, minSize, maxSize, modifiedAfter, modifiedBefore, ... } → { searchId }
+GET    /api/search/{id}?from=            # 狀態；指定 from 時附上從該索引開始的結果（最多 5000 筆）
+GET    /api/search/{id}/events           # SSE：batch（新結果 + 進度）… done（最後一批 + 無法讀取的路徑）
+POST   /api/search/{id}/cancel           # 停止，但保留已找到的結果（仍可顯示、開啟、匯出）
+DELETE /api/search/{id}                  # 停止並刪除
+GET    /api/search/{id}/export           # 匯出 CSV（UTF-8 含 BOM；以 = + - @ 開頭的值加上 ' 防止公式注入）
+POST   /api/shell/reveal                 # { searchId, hitIndex } 或 { scanId, itemId } → 在檔案總管中顯示
+POST   /api/shell/open                   # 同上 → 用預設程式開啟（程式與指令碼一律拒絕）
 ```
+
+> 與原草案的差異：shell 動作不接受任意路徑，只接受「搜尋結果第幾筆」或「掃描項目 id」，從根本上保證只能操作使用者看得到的結果；匯出改用 GET（唯讀）；另外新增 `cancel` 與 `?from=`。
 
 ---
 
@@ -701,6 +711,16 @@ dotnet publish src/WindowsTool.App -c Release -r win-x64 --self-contained true \
   - 在含 10 萬個以上檔案的真實資料夾上，第一批結果在 1 秒內出現；完整走訪時間不比 `cmd /c dir /s /b` 慢（實測數據記錄在 PR）。
   - symlink / junction 不跟進；無權限路徑略過並計數；可以中途取消；超過結果上限會截斷並提示。
   - `shell/reveal`、`shell/open` 只接受結果中出現過的路徑。
+- **進度（2026-10-24）**：已完成，分支 `phase-1.5-search`。
+  - 參考答案比對：子字串、多關鍵字、萬用字元、正規表示式、副檔名 + 大小、大小範圍、只找資料夾 / 檔案、日期範圍、完整路徑，共 10 組條件與暴力列舉結果完全一致（自動化測試）。
+  - 實測（暖快取，NVMe SSD）：
+
+    | 位置 | 資料夾數 | WindowsTool 完整走訪 | `dir /s /b /a` | 第一筆結果 |
+    |---|---|---|---|---|
+    | `C:\Program Files` | 19,015 | 0.19–0.32 秒 | 2.2–2.7 秒 | 2–32 ms |
+    | `C:\Users\<user>` | 114,039 | 1.3–1.5 秒 | 17–18 秒 | 2–30 ms |
+
+    UI 上（含 HTTP 與 SSE 批次間隔）第一批結果約 0.33 秒出現；停止約 0.06 秒生效。
 
 ### Phase 2｜規則引擎 + 內建規則（2–3 天）
 - Rule 模型、GlobMatcher、PathTokens、優先序、保護規則、Validator。
