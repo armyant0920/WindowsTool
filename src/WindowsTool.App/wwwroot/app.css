@@ -446,3 +446,28 @@ table.hits tr:focus-within .actions-col .link { visibility: visible; }
   .editor-grid { grid-template-columns: minmax(0, 1fr); }
   .rule-list .hide-sm { display: none; }
 }
+
+/* ---- 執行計畫 ------------------------------------------------------------ */
+.plan-card { border-color: var(--accent); }
+.mode-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+.mode {
+  display: flex; gap: 8px; align-items: flex-start; border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; cursor: pointer; background: var(--surface-2);
+}
+.mode > span { display: flex; flex-direction: column; gap: 2px; }
+.mode small { font-size: 12px; }
+.mode.active { border-color: var(--accent); background: var(--accent-soft); }
+.mode.danger.active { border-color: var(--error); background: var(--error-soft); }
+.btn.danger, .btn.primary.danger { background: var(--error); border-color: var(--error); color: #fff; }
+.confirm-box .field { margin-top: 8px; max-width: 320px; }
+.command-list { margin: 6px 0 0; padding-left: 18px; }
+.plan-table { max-height: 420px; overflow: auto; }
+.plan-path { overflow-wrap: anywhere; font-size: 12px; }
+.plan-reason { font-size: 12px; color: var(--muted); max-width: 360px; }
+.state-badge { display: inline-block; font-size: 11px; line-height: 1.5; padding: 0 8px; border-radius: 999px; white-space: nowrap; }
+.state-badge.state-ready, .state-badge.outcome-ok { color: var(--risk-low); background: var(--risk-low-soft); }
+.state-badge.state-warning { color: var(--risk-medium); background: var(--risk-medium-soft); }
+.state-badge.state-blocked, .state-badge.outcome-failed { color: var(--risk-high); background: var(--risk-high-soft); }
+.state-badge.state-skipped, .state-badge.outcome-skipped { color: var(--muted); border: 1px solid var(--border); }
+.command-output { margin: 4px 0 0; padding: 6px 8px; background: var(--surface-2); border-radius: 4px; font-size: 12px; white-space: pre-wrap; max-height: 160px; overflow: auto; }
+.items tbody tr.done td:not(.check-col) { opacity: .5; text-decoration: line-through; }

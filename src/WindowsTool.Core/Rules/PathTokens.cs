@@ -15,6 +15,7 @@ public sealed class PathTokens
         "UserProfile", "LocalAppData", "RoamingAppData", "Temp", "ProgramData", "Windows",
         "ProgramFiles", "ProgramFiles(x86)", "SystemDrive",
         "Documents", "Desktop", "Pictures", "Videos", "Music",
+        "DataDirectory",
     ];
 
     private readonly Dictionary<string, string> _values;
@@ -35,7 +36,8 @@ public sealed class PathTokens
     }
 
     /// <summary>目前使用者、目前作業系統的實際位置。</summary>
-    public static PathTokens FromEnvironment()
+    /// <param name="dataDirectory">WindowsTool 的資料資料夾（<c>{DataDirectory}</c>），省略時這個 token 不生效。</param>
+    public static PathTokens FromEnvironment(string? dataDirectory = null)
     {
         static string Folder(Environment.SpecialFolder folder) =>
             Environment.GetFolderPath(folder, Environment.SpecialFolderOption.DoNotVerify);
@@ -61,6 +63,7 @@ public sealed class PathTokens
             ["Pictures"] = Folder(Environment.SpecialFolder.MyPictures),
             ["Videos"] = Folder(Environment.SpecialFolder.MyVideos),
             ["Music"] = Folder(Environment.SpecialFolder.MyMusic),
+            ["DataDirectory"] = dataDirectory ?? "",
         });
     }
 
@@ -92,6 +95,11 @@ public sealed class PathTokens
                 var name = input[(i + 1)..end];
                 if (!_values.TryGetValue(name, out var value))
                 {
+                    if (Names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        return TokenExpansion.NotAvailable($"{{{name}}} 沒有設定");
+                    }
+
                     return TokenExpansion.Fail($"不認識的路徑變數 {{{name}}}；可以使用：{string.Join("、", Names.Select(n => "{" + n + "}"))}");
                 }
 

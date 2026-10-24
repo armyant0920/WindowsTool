@@ -10,7 +10,7 @@
 
 完全離線可用。打包成單一執行檔，不需要安裝 .NET。
 
-> 目前進度：**Phase 2（規則引擎 + 內建規則）**。完整計畫見 [docs/PLAN.md](docs/PLAN.md)；規則格式見 [docs/rule-schema.md](docs/rule-schema.md)。
+> 目前進度：**Phase 3（執行器：資源回收筒、隔離區、操作紀錄）**，第一個可用版本（v0.1，不含 AI）。完整計畫見 [docs/PLAN.md](docs/PLAN.md)；規則格式見 [docs/rule-schema.md](docs/rule-schema.md)。
 
 ## 使用方式
 
