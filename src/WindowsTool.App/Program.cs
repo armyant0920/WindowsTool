@@ -2,6 +2,7 @@ using System.Net;
 using WindowsTool.App;
 using WindowsTool.App.Endpoints;
 using WindowsTool.App.Hosting;
+using WindowsTool.App.Plans;
 using WindowsTool.App.Scans;
 using WindowsTool.App.Search;
 using WindowsTool.App.Shell;
@@ -25,8 +26,9 @@ var token = SessionToken.Create(builder.Environment.IsDevelopment(), options.Dev
 builder.Services.AddSingleton(new LocalServerState(token, options.Port));
 var paths = AppPaths.Resolve(options.DataDirectory, AppContext.BaseDirectory);
 builder.Services.AddSingleton(paths);
-builder.Services.AddSingleton(_ => new RuleStore(paths.UserRulesFile, BuiltinRules.All, PathTokens.FromEnvironment()));
+builder.Services.AddSingleton(_ => new RuleStore(paths.UserRulesFile, BuiltinRules.All, PathTokens.FromEnvironment(paths.DataDirectory)));
 builder.Services.AddSingleton<ScanManager>();
+builder.Services.AddExecution(paths);
 builder.Services.AddSingleton<SearchManager>();
 builder.Services.AddSingleton<IShellLauncher, ShellLauncher>();
 builder.Services.ConfigureHttpJsonOptions(json =>
@@ -45,6 +47,7 @@ app.MapScanEndpoints();
 app.MapSearchEndpoints();
 app.MapShellEndpoints();
 app.MapRuleEndpoints();
+app.MapPlanEndpoints();
 
 app.Lifetime.ApplicationStarted.Register(() => StartupAnnouncer.OnStarted(app, options));
 

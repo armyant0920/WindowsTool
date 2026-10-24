@@ -7,19 +7,20 @@ import { ResultView } from './components/result-view.js';
 import { TreeNode } from './components/tree-node.js';
 import { SearchView } from './components/search-view.js';
 import { RulesView } from './components/rules-view.js';
+import { HistoryView } from './components/history-view.js';
 
 const { createApp, ref, computed, onMounted } = Vue;
 
 const App = {
-  components: { ScanForm, ScanProgressView, ResultView, SearchView, RulesView },
+  components: { ScanForm, ScanProgressView, ResultView, SearchView, RulesView, HistoryView },
   setup() {
     const TAB_KEY = 'windowstool.tab';
     let initialTab = 'scan';
     try {
       const saved = localStorage.getItem(TAB_KEY);
-      if (saved === 'search' || saved === 'rules') initialTab = saved;
+      if (saved === 'search' || saved === 'rules' || saved === 'history') initialTab = saved;
     } catch { /* 預設磁碟掃描 */ }
-    const tab = ref(initialTab); // scan | search | rules
+    const tab = ref(initialTab); // scan | search | rules | history
     const view = ref('home'); // 磁碟掃描的畫面：home | scanning | results
     const system = ref(null);
     const fatal = ref(null);
@@ -29,6 +30,7 @@ const App = {
     const rulesVersion = ref(0); // 規則變動時遞增，結果頁會重新載入
     const rulePrefill = ref(null);
     const rulesMounted = ref(initialTab === 'rules'); // 第一次切到規則頁才載入
+    const historyKey = ref(0); // 切到「紀錄與隔離區」時重新整理
     let lastRequest = null;
     let follower = null;
 
@@ -125,11 +127,12 @@ const App = {
     function switchTab(name) {
       tab.value = name;
       if (name === 'rules') rulesMounted.value = true;
+      if (name === 'history') historyKey.value++;
       try { localStorage.setItem(TAB_KEY, name); } catch { /* 無法儲存就算了 */ }
     }
 
     return {
-      tab, view, system, fatal, notice, scan, resultKey, rulesVersion, rulePrefill, rulesMounted, completedScan,
+      tab, view, system, fatal, notice, scan, resultKey, rulesVersion, rulePrefill, rulesMounted, completedScan, historyKey,
       startScan, cancelScan, newScan, rescan, switchTab, createRuleFrom,
     };
   },
@@ -144,6 +147,7 @@ const App = {
         <button type="button" class="tab" :class="{ active: tab === 'scan' }" :aria-current="tab === 'scan' ? 'page' : undefined" @click="switchTab('scan')">磁碟掃描</button>
         <button type="button" class="tab" :class="{ active: tab === 'search' }" :aria-current="tab === 'search' ? 'page' : undefined" @click="switchTab('search')">快速搜尋</button>
         <button type="button" class="tab" :class="{ active: tab === 'rules' }" :aria-current="tab === 'rules' ? 'page' : undefined" @click="switchTab('rules')">規則</button>
+        <button type="button" class="tab" :class="{ active: tab === 'history' }" :aria-current="tab === 'history' ? 'page' : undefined" @click="switchTab('history')">紀錄與隔離區</button>
       </nav>
       <span v-if="system" class="muted env">{{ system.system.isElevated ? '系統管理員' : '一般權限' }}</span>
     </header>
@@ -165,6 +169,9 @@ const App = {
         <div v-if="rulesMounted" v-show="tab === 'rules'">
           <rules-view :scan-id="completedScan ? completedScan.scanId : null" :scan-root="completedScan ? completedScan.root : null"
                       :prefill="rulePrefill" @changed="rulesVersion++" @prefill-used="rulePrefill = null" />
+        </div>
+        <div v-if="tab === 'history'">
+          <history-view :refresh-key="historyKey" />
         </div>
       </template>
     </main>

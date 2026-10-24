@@ -2,6 +2,14 @@
   "version": 1,
   "rules": [
     {
+      "id": "protect-windowstool-data",
+      "name": "WindowsTool 的資料與隔離區",
+      "source": "builtin",
+      "kind": "protect",
+      "match": { "pathGlob": ["{DataDirectory}", "?:/WindowsTool.quarantine"] },
+      "result": { "category": "WindowsTool 資料", "reason": "規則、操作紀錄與隔離區；隔離的項目請在「紀錄與隔離區」頁面還原或清空。" }
+    },
+    {
       "id": "caution-git",
       "name": ".git 版本庫",
       "source": "builtin",

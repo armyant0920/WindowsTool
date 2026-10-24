@@ -334,6 +334,32 @@ public sealed class GlobPattern
 
     internal int SegmentCount => _segments.Length;
 
+    /// <summary>
+    /// 樣式是否可能符合 <paramref name="directory"/> 底下的某個子孫（不含它本身）。
+    /// 用來判斷處理一個資料夾前，是否需要逐一檢查裡面的項目。
+    /// </summary>
+    public bool CouldMatchDescendantOf(ReadOnlySpan<string> directory) => CouldMatch(0, directory);
+
+    private bool CouldMatch(int p, ReadOnlySpan<string> prefix)
+    {
+        if (prefix.Length == 0)
+        {
+            return p < _segments.Length; // 還有剩下的樣式，總有某個子孫可以符合
+        }
+
+        if (p >= _segments.Length)
+        {
+            return false;
+        }
+
+        if (_segments[p].IsDoubleStar)
+        {
+            return CouldMatch(p + 1, prefix) || CouldMatch(p, prefix[1..]);
+        }
+
+        return _segments[p].Wildcard.IsMatch(prefix[0]) && CouldMatch(p + 1, prefix[1..]);
+    }
+
     /// <summary>樣式本身是否沒有任何萬用字元（只會符合一個路徑）。</summary>
     public bool IsLiteral => LiteralPrefix.Count == _segments.Length;
 

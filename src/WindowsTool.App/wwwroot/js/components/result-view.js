@@ -1,6 +1,7 @@
 // 掃描結果：摘要、樹狀目錄、可篩選排序的表格、項目詳情。
 
 import { api } from '../api.js';
+import { PlanView } from './plan-view.js';
 import {
   formatBytes, formatNumber, formatDate, formatDuration, formatPercent, FLAG_LABELS, extLabel,
   RISK_LABELS, ACTION_LABELS, SOURCE_LABELS, KIND_LABELS,
@@ -49,6 +50,7 @@ function debounce(fn, ms) {
 
 export const ResultView = {
   name: 'ResultView',
+  components: { PlanView },
   props: {
     scan: { type: Object, required: true },
     rulesVersion: { type: Number, default: 0 },
@@ -76,58 +78,85 @@ export const ResultView = {
     const copied = ref(false);
 
     // ---- 規則標註與勾選 ----
-    // 勾選只記在瀏覽器：預設依規則的 autoSelect，使用者可以改；受保護的項目一律不能勾選。
-    // 實際的清理（執行計畫）在下一個階段加入。
+    // 勾選 =（所有依規則預設勾選的項目，由伺服器計算）＋ 手動勾選 − 手動取消。受保護的項目一律不能勾選。
+    // 這裡只記錄「手動改過的」，建立執行計畫時一併送出；伺服器會再檢查一次。
     const categories = ref([]);
-    const known = reactive({}); // id → { size, auto, selectable, path }
+    const known = reactive({}); // id → { size, auto, selectable }
     const picks = reactive({}); // id → true / false（使用者手動改過的）
+    const autoEnabled = ref(true); // 「全部取消」後不再套用預設勾選
+    const done = reactive({}); // id → true：已經處理過（移到資源回收筒、隔離區…）
+    const planSelection = ref(null); // 開啟執行計畫時的勾選快照
 
     const hasFilters = computed(() =>
       filters.kind !== 'any' || filters.minSize !== null || filters.q.trim() !== '' || filters.ext.trim() !== ''
       || filters.olderThanDays !== null || filters.risk !== '' || filters.category !== '');
 
-    // 大小只計算最上層：資料夾和它裡面的項目都勾選時不重複計算
+    // 數量與大小是估計值：預設勾選的部分取自類別統計（同類別的上下層不重複計算），精確數字在執行計畫的預覽中
     const selection = computed(() => {
-      const chosen = [];
-      for (const [id, info] of Object.entries(known)) {
-        const on = id in picks ? picks[id] : info.auto;
-        if (on && info.selectable) chosen.push(info);
-      }
-      const paths = new Set(chosen.map((i) => i.path.toLowerCase()));
-      let size = 0;
-      for (const info of chosen) {
-        let p = info.path.toLowerCase();
-        let nested = false;
-        for (let cut = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/')); cut > 0; cut = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))) {
-          p = p.slice(0, cut);
-          if (paths.has(p)) { nested = true; break; }
+      const auto = autoEnabled.value;
+      let count = auto ? categories.value.reduce((sum, c) => sum + c.autoSelectCount, 0) : 0;
+      let size = auto ? categories.value.reduce((sum, c) => sum + c.autoSelectSize, 0) : 0;
+      const include = [];
+      const exclude = [];
+      for (const [key, on] of Object.entries(picks)) {
+        const info = known[key];
+        if (!info || !info.selectable || done[key]) continue;
+        const preset = auto && info.auto;
+        if (on && !preset) {
+          include.push(Number(key));
+          count++;
+          size += info.size;
+        } else if (!on && preset) {
+          exclude.push(Number(key));
+          count--;
+          size -= info.size;
         }
-        if (!nested) size += info.size;
       }
-      return { count: chosen.length, size };
+      return { useAutoSelect: auto, include, exclude, count: Math.max(0, count), size: Math.max(0, size) };
     });
 
     function remember(items) {
       for (const item of items) {
-        if (item) known[item.id] = { size: item.size, auto: item.autoSelected, selectable: item.selectable, path: item.path };
+        if (item) known[item.id] = { size: item.size, auto: item.autoSelected, selectable: item.selectable };
       }
     }
 
     function isChecked(item) {
-      if (!item.selectable) return false;
-      return item.id in picks ? picks[item.id] : item.autoSelected;
+      if (!item.selectable || done[item.id]) return false;
+      return item.id in picks ? picks[item.id] : autoEnabled.value && item.autoSelected;
     }
 
     function toggle(item, event) {
-      if (!item.selectable) return;
+      if (!item.selectable || done[item.id]) return;
       picks[item.id] = event.target.checked;
     }
 
     function clearSelection() {
-      for (const id of Object.keys(known)) picks[id] = false;
+      autoEnabled.value = false;
+      for (const id of Object.keys(picks)) delete picks[id];
+    }
+
+    function restoreDefaults() {
+      autoEnabled.value = true;
+      for (const id of Object.keys(picks)) delete picks[id];
+    }
+
+    function openPlan() {
+      planSelection.value = { ...selection.value };
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function onExecuted(itemIds) {
+      for (const id of itemIds) {
+        if (id != null) {
+          done[id] = true;
+          delete picks[id];
+        }
+      }
     }
 
     function lockReason(item) {
+      if (done[item.id]) return '已經處理過';
       if (item.classification?.risk === 'protected') return `受保護：${item.classification.ruleName}`;
       if (item.containsProtected) return '這個資料夾裡有受保護的項目，不能整個勾選';
       return '';
@@ -323,7 +352,8 @@ export const ResultView = {
       scan: props.scan, summary, rootItem, filters, sort, page, detail, folderDetail, selectedItem, breadcrumb,
       hasFilters, showErrors, copied, MIN_SIZES, AGES, KIND_ICONS, FLAG_LABELS,
       RISK_FILTERS, RISK_LABELS, ACTION_LABELS, SOURCE_LABELS, KIND_LABELS, ROLE_LABELS,
-      categories, selection, isChecked, toggle, clearSelection, lockReason, riskClass, classificationTitle,
+      categories, selection, isChecked, toggle, clearSelection, restoreDefaults, lockReason, riskClass, classificationTitle,
+      autoEnabled, done, planSelection, openPlan, onExecuted, scanId, picks,
       filterCategory, createRule,
       openFolder, selectItem, activate, sortBy, sortMark, resetFilters, copyPath, relativeParent, shell,
       loadMore: () => loadItems(true),
@@ -366,6 +396,9 @@ export const ResultView = {
         </button>
       </div>
     </section>
+
+    <plan-view v-if="planSelection" :key="JSON.stringify(planSelection)" :scan-id="scanId" :selection="planSelection"
+               @close="planSelection = null" @executed="onExecuted" @rescan="$emit('rescan')" />
 
     <div class="result-layout">
       <aside class="card tree-pane" aria-label="資料夾樹狀結構">
@@ -428,11 +461,11 @@ export const ResultView = {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in page.items" :key="item.id" :class="{ selected: selectedItem && selectedItem.id === item.id }"
+              <tr v-for="item in page.items" :key="item.id" :class="{ selected: selectedItem && selectedItem.id === item.id, done: done[item.id] }"
                   @click="selectItem(item)" @dblclick="activate(item)" tabindex="0" @keydown.enter="activate(item)">
                 <td class="check-col" @click.stop>
-                  <input type="checkbox" :checked="isChecked(item)" :disabled="!item.selectable" @change="toggle(item, $event)"
-                         :title="item.selectable ? '勾選' : lockReason(item)" :aria-label="'勾選 ' + item.name">
+                  <input type="checkbox" :checked="isChecked(item)" :disabled="!item.selectable || done[item.id]" @change="toggle(item, $event)"
+                         :title="item.selectable && !done[item.id] ? '勾選' : lockReason(item)" :aria-label="'勾選 ' + item.name">
                 </td>
                 <td class="name-cell">
                   <span class="kind-icon" aria-hidden="true">{{ KIND_ICONS[item.kind] }}</span>
@@ -478,12 +511,14 @@ export const ResultView = {
           <span class="muted">{{ page.loading ? '載入中…' : '共 ' + formatNumber(page.total) + ' 項' + (page.items.length < page.total ? '，已顯示 ' + formatNumber(page.items.length) + ' 項' : '') }}</span>
           <button v-if="page.items.length < page.total" class="btn" type="button" @click="loadMore" :disabled="page.loading">顯示更多</button>
         </div>
-        <div v-if="selection.count > 0" class="selection-bar" role="status">
-          <span>已勾選 <strong>{{ formatNumber(selection.count) }}</strong> 項（約 {{ formatBytes(selection.size) }}）</span>
-          <span class="muted">清理功能（執行計畫）將在下一個階段加入；受保護的項目不會被勾選。</span>
-          <button class="link" type="button" @click="clearSelection">全部取消</button>
+        <div v-if="selection.count > 0 || !autoEnabled" class="selection-bar" role="status">
+          <span v-if="selection.count > 0">已勾選約 <strong>{{ formatNumber(selection.count) }}</strong> 項（約 {{ formatBytes(selection.size) }}）{{ autoEnabled ? '，包含依規則預設勾選、還沒捲動到的項目' : '' }}</span>
+          <span v-else class="muted">沒有勾選任何項目。</span>
+          <button v-if="selection.count > 0" class="btn small primary" type="button" @click="openPlan">建立執行計畫…</button>
+          <button v-if="selection.count > 0" class="link" type="button" @click="clearSelection">全部取消</button>
+          <button v-if="!autoEnabled || Object.keys(picks).length" class="link" type="button" @click="restoreDefaults">恢復預設勾選</button>
         </div>
-        <p class="hint muted">按一下查看詳情；按兩下資料夾可以進入。勾選預設依規則決定。</p>
+        <p class="hint muted">按一下查看詳情；按兩下資料夾可以進入。勾選預設依規則決定；建立執行計畫後會先預覽，確認後才會處理。</p>
       </section>
 
       <aside class="card detail-pane" aria-label="項目詳情">

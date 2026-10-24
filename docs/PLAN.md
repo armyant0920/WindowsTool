@@ -446,6 +446,19 @@ POST   /api/shell/open                   # 同上 → 用預設程式開啟（�
 
 - 命令一律顯示完整內容，使用者確認後才執行；stdout 和 stderr 都寫入紀錄。
 - AI **不能**新增白名單命令，只能引用既有的 commandId。
+- **查證結果（2026-10-25，`--help`）**：npm 5 起 `cache clean` 必須加 `--force`；`docker system prune` 不加 `-f` 會停下來等待確認，因此實際執行 `docker system prune -f`（仍然不加 `-a`）；`pip cache purge` 需要 pip 20.1 以上；`dism` 需要系統管理員權限。命令不經過 shell 直接啟動，參數全部是程式內建的常數；Windows 上 `npm` 這類 `.cmd` 透過 `cmd /d /c` 執行。逾時 15 分鐘，輸出最多保留 64 KB。
+
+### 10.4 Phase 3 實作決策（2026-10-25）
+- **資源回收筒（Windows）用 Shell 的 `IFileOperation`**，不用 `Microsoft.VisualBasic.FileIO.FileSystem`（15 節的【實作時確認】）。.NET 10 雖然還有這個 API，但它底層的 `SHFileOperation` 在「不提示」模式下，遇到不能回收的項目（網路磁碟、隨身碟、超過資源回收筒容量）會**直接永久刪除**，違反「刪除預設可還原」。`IFileOperation` 在刪除每一項前呼叫 `PreDeleteItem`，旗標中沒有 `TSF_DELETE_RECYCLE_IF_POSSIBLE` 就代表會永久刪除，這時回傳取消，該項目就不會被刪。網路磁碟、卸除式磁碟在 dry-run 階段就擋下（建議改用隔離區）。執行後會記錄項目在資源回收筒中的位置（`$Recycle.Bin\…\$R…`）。
+- **隔離區只在同一個磁碟內搬移**（rename，瞬間完成、不需要額外空間，也不會跨磁碟複製到一半失敗）：和資料資料夾同一個磁碟時放在 `<資料資料夾>/quarantine/`，其他磁碟放在該磁碟根目錄的 `WindowsTool.quarantine/`（隱藏）。manifest 統一在 `<資料資料夾>/quarantine/manifest.jsonl`，只附加（隔離 / 還原 / 清空各一行），損壞的行會略過。還原時原位置已經有同名項目就不覆蓋。新增內建保護規則 `protect-windowstool-data`（`{DataDirectory}`、`?:/WindowsTool.quarantine`），避免使用者在掃描結果中勾到隔離區。
+- **dry-run 檢查**（建立計畫時一次、每一項執行前再一次）：是否還存在、類型是否改變；是否為連結（**連結一律不處理**，避免誤刪連結指向的內容）；保護規則（含從上層延伸）；資料夾裡是否有受保護的項目——掃描時沒有個別保留的小檔案也要檢查，因此只要有保護規則**可能**符合資料夾裡的東西（例如 `**/重要.txt`），就實際走訪資料夾逐一比對（超過 50 萬個項目時保守擋下）；能不能放進資源回收筒 / 隔離區；搬移的目的地；檔案是否被其他程式開啟（警告）；系統資料夾可能需要系統管理員權限（警告）。
+- **固定擋下的關鍵資料夾**：磁碟根目錄、`{UserProfile}` 本身與它的上一層（`C:\Users`）、所有路徑變數指到的資料夾本身（AppData、Temp、文件、桌面…）。裡面的項目可以處理。
+- **上下層同時勾選**：只處理上層，子項目標為「略過（已經包含在上層）」；同一個清理命令只執行一次。
+- **勾選的計算在伺服器**：計畫的項目 =（所有依規則預設勾選的項目）＋ 手動勾選 − 手動取消，不受畫面上載入了哪些項目影響；不可勾選的項目即使送來也會被擋下。
+- **「依規則建議」的動作對應**：清理命令、隔離、永久刪除照規則；保留、人工確認、未分類一律用可以還原的資源回收筒（項目是使用者自己勾的）。
+- **永久刪除**：計畫含有永久刪除時，必須輸入「永久刪除」才能執行（UI 與 API 都檢查）；清空隔離區也一樣。唯讀檔案（例如 `.git` 的物件檔）會先清除唯讀屬性。
+- **資料夾跨磁碟搬移**暫不支援（需要複製，容易中途失敗）；檔案可以跨磁碟搬移，會先檢查目的地空間。
+- **計畫保存在記憶體**（最近 20 個），每個計畫只能執行一次；執行中可以停止（正在處理的那一項完成後停止，其餘標為略過）。
 
 ---
 
@@ -501,11 +514,14 @@ PUT    /api/rules/{id}/enabled           # { enabled }；內建保護規則不�
 POST   /api/rules/import | GET /api/rules/export   # rules.user.json 格式；匯入全部通過才寫入
 POST   /api/rules/reload                 # 重新讀取規則檔（在外部編輯過時）
 
-POST   /api/plans                        # 產生 + dry-run
-POST   /api/plans/{id}/execute
-GET    /api/logs?from=&to=&planId=
+POST   /api/plans                        # { scanId, useAutoSelect, include[], exclude[], action, destination } → 產生 + dry-run（不動檔案）
+GET    /api/plans/{id}                   # 計畫 + 執行進度 / 結果
+POST   /api/plans/{id}/execute           # { confirmation }：含永久刪除時必須是「永久刪除」；每個計畫只能執行一次
+POST   /api/plans/{id}/cancel            # 停止執行
+GET    /api/logs?from=&to=&planId=&limit=
+GET    /api/quarantine?all=              # 隔離區項目（all=true 含已還原 / 已清空）
 POST   /api/quarantine/{entryId}/restore
-POST   /api/quarantine/purge?olderThanDays=
+POST   /api/quarantine/purge             # { olderThanDays, confirmation: "永久刪除" }
 
 GET    /api/ai/providers
 PUT    /api/ai/providers/active
@@ -677,7 +693,7 @@ POST   /api/ai/propose-rule              # { scanId, instruction, contextItemIds
 
 | 介面 | Windows | Linux | macOS |
 |---|---|---|---|
-| `ITrash` | `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile/DeleteDirectory`（`RecycleOption.SendToRecycleBin`），或 `SHFileOperation` / `IFileOperation` P/Invoke【實作時確認在 .NET 10 下的行為】| freedesktop Trash spec（`~/.local/share/Trash`）自行實作，或呼叫 `gio trash` | `NSFileManager trashItem`（透過 `osascript` 或 P/Invoke），或搬到 `~/.Trash` |
+| `ITrash` | **`IFileOperation`**（COM，STA 執行緒），在 `PreDeleteItem` 擋下會被永久刪除的項目（Phase 3 確認：`FileIO.FileSystem` / `SHFileOperation` 會在不能回收時直接永久刪除，見 10.4）| freedesktop Trash spec（`~/.local/share/Trash`）自行實作，或呼叫 `gio trash` | `NSFileManager trashItem`（透過 `osascript` 或 P/Invoke），或搬到 `~/.Trash` |
 | `IProtectedPaths` | 13 節的 Windows 清單 | Linux 清單 | macOS 清單 |
 | `IPathTokens` | `Environment.GetFolderPath` | XDG 對應 | macOS 對應 |
 | `IPrivilege` | 判斷是否為系統管理員；提供「以系統管理員重新啟動」 | `geteuid() == 0` | 同 Linux |
@@ -767,6 +783,13 @@ dotnet publish src/WindowsTool.App -c Release -r win-x64 --self-contained true \
 - `ITrash`（先完成 Windows）、隔離區 + manifest、move、delete 二次確認、白名單命令。
 - Plan、dry-run 預覽、執行結果、ActionLog、還原。
 - ✅ 驗收：在 fixture 目錄完成「recycle → 從資源回收筒手動還原」「quarantine → 工具內還原」；檔案被鎖定時，單筆失敗不中斷；每次執行都有完整紀錄。
+- **進度（2026-10-25）**：已完成，分支 `phase-3-executor`。設計決策見 10.4。
+  - recycle → 從資源回收筒還原：自動化測試把 fixture 的檔案與資料夾丟進真正的資源回收筒，確認出現在 `$Recycle.Bin` 後清掉；UI 實測把 fixture 的 `node_modules` 丟進資源回收筒，再用 Shell 的「還原」（和檔案總管右鍵 → 還原是同一個命令）還原成功。
+  - quarantine → 工具內還原：自動化測試 ＋ UI 實測（4 個項目移到隔離區，在「紀錄與隔離區」頁還原其中一個）。
+  - 檔案被鎖定：自動化測試（3 個項目中 1 個被其他程式獨佔開啟，dry-run 顯示警告；執行時該項失敗，其餘 2 項完成）。
+  - 完整紀錄：每一項（含擋下、略過、失敗）都寫進 `logs/actions-YYYYMM.jsonl`，含還原資訊；還原與清空隔離區也有紀錄。
+  - 永久刪除：UI 要輸入完整的「永久刪除」按鈕才會啟用，API 也檢查。
+  - 涵蓋率（`Core/Execution`）：行 87.1%、分支 80.2%。測試共 314 個（新增 34 個）。
 - **此時第一個可用版本完成（v0.1，不含 AI）**
 
 ### Phase 4｜AI 分析（2–3 天）
