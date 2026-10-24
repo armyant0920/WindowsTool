@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WindowsTool.App.Endpoints;
+using WindowsTool.App.Scans;
 
 namespace WindowsTool.App;
 
@@ -9,4 +10,10 @@ namespace WindowsTool.App;
 /// </summary>
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
 [JsonSerializable(typeof(SystemInfoResponse))]
+[JsonSerializable(typeof(ErrorResponse))]
+[JsonSerializable(typeof(StartScanRequest))]
+[JsonSerializable(typeof(StartScanResponse))]
+[JsonSerializable(typeof(ScanStatusDto))]
+[JsonSerializable(typeof(ItemPageDto))]
+[JsonSerializable(typeof(ItemDetailDto))]
 internal sealed partial class AppJsonContext : JsonSerializerContext;

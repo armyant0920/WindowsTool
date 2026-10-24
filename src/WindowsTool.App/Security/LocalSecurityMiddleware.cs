@@ -11,8 +11,9 @@ namespace WindowsTool.App.Security;
 /// </summary>
 public sealed class LocalSecurityMiddleware(RequestDelegate next, LocalServerState state)
 {
+    // Vue 全域版在執行時編譯 template，需要 'unsafe-eval'；腳本來源仍然只允許本機（'self'）。
     private const string ContentSecurityPolicy =
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+        "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self'; img-src 'self' data:; " +
         "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
     public Task InvokeAsync(HttpContext context)

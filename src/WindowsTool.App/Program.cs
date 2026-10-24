@@ -2,6 +2,7 @@ using System.Net;
 using WindowsTool.App;
 using WindowsTool.App.Endpoints;
 using WindowsTool.App.Hosting;
+using WindowsTool.App.Scans;
 using WindowsTool.App.Security;
 
 var cli = CommandLineOptions.Parse(args);
@@ -18,6 +19,7 @@ builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, o
 
 var token = SessionToken.Create(builder.Environment.IsDevelopment(), options.DevToken);
 builder.Services.AddSingleton(new LocalServerState(token, options.Port));
+builder.Services.AddSingleton<ScanManager>();
 builder.Services.ConfigureHttpJsonOptions(json =>
     json.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default));
 
@@ -30,6 +32,7 @@ app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
 app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
 
 app.MapSystemEndpoints();
+app.MapScanEndpoints();
 
 app.Lifetime.ApplicationStarted.Register(() => StartupAnnouncer.OnStarted(app, options));
 

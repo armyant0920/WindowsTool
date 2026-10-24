@@ -32,3 +32,7 @@ dotnet_naming_symbols.private_fields.applicable_kinds = field
 dotnet_naming_symbols.private_fields.applicable_accessibilities = private
 dotnet_naming_style.underscore_camel.capitalization = camel_case
 dotnet_naming_style.underscore_camel.required_prefix = _
+
+# 分析規則調整
+# [Flags] 列舉以 Flags 結尾比較直觀（EntryFlags、ScanItemFlags）
+dotnet_diagnostic.CA1711.severity = none
