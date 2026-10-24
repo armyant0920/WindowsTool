@@ -1,0 +1,5 @@
+[*.cs]
+# 測試方法名稱使用底線分隔（Method_condition_expected）
+dotnet_diagnostic.CA1707.severity = none
+# 測試中不需要 ConfigureAwait
+dotnet_diagnostic.CA2007.severity = none

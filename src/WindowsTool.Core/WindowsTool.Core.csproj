@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 純邏輯：掃描、搜尋、規則、執行。不依賴 ASP.NET。 -->
+
+</Project>
