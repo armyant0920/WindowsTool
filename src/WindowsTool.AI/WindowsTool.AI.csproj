@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- AI Gateway 與各 Provider（Phase 4 開始實作） -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\WindowsTool.Core\WindowsTool.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WindowsTool</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>WindowsTool</h1>
+    <span id="version" class="muted"></span>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>連線狀態</h2>
+      <p id="status" class="status">連線中…</p>
+    </section>
+
+    <section class="card" id="system" hidden>
+      <h2>系統資訊</h2>
+      <dl class="info">
+        <dt>作業系統</dt><dd id="os"></dd>
+        <dt>架構</dt><dd id="arch"></dd>
+        <dt>執行環境</dt><dd id="framework"></dd>
+        <dt>權限</dt><dd id="elevated"></dd>
+      </dl>
+
+      <h3>磁碟</h3>
+      <table class="drives">
+        <thead>
+          <tr><th>磁碟</th><th>類型</th><th>格式</th><th class="num">已用 / 總量</th><th>使用率</th></tr>
+        </thead>
+        <tbody id="drives"></tbody>
+      </table>
+    </section>
+
+    <p class="muted footnote">Phase 0：專案骨架。掃描、快速搜尋與清理功能會在後續階段加入。</p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<Project>
+  <!-- 所有專案共用的設定 -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <Version>0.0.1</Version>
+    <Product>WindowsTool</Product>
+    <Authors>armyant0920</Authors>
+    <Copyright>Copyright (c) 2026 armyant0920</Copyright>
+    <DebugType>embedded</DebugType>
+    <RepositoryUrl>https://github.com/armyant0920/WindowsTool</RepositoryUrl>
+  </PropertyGroup>
+</Project>

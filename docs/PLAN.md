@@ -68,7 +68,7 @@
 | JSON | System.Text.Json + Source Generator | 為 trimming 做準備，避免反射相關的程式被裁掉。 |
 | AI 抽象 | **Microsoft.Extensions.AI**（`IChatClient`）| 微軟官方抽象層；OpenAI 相容、Ollama、Anthropic 都有實作。【實作時確認各套件版本】|
 | MCP（Phase 6）| ModelContextProtocol C# SDK | 讓外部 AI 客戶端驅動本工具。【實作時確認套件名稱與版本】|
-| 測試 | xUnit + FluentAssertions（或 Shouldly）| |
+| 測試 | **xUnit v3 + Shouldly** | FluentAssertions 從 v8 起改為商用授權，因此採用 Shouldly。.NET 10 SDK 搭配 xUnit v3 使用 Microsoft.Testing.Platform 執行器（設定在 `global.json`）。 |
 | CI | GitHub Actions | 矩陣建置三平台並上傳 artifacts。 |
 
 ---
@@ -138,7 +138,8 @@ WindowsTool/
 │  └─ builtin/                  # windows.json, linux.json, macos.json, common.json
 ├─ tests/
 │  ├─ WindowsTool.Core.Tests/
-│  └─ WindowsTool.AI.Tests/
+│  ├─ WindowsTool.App.Tests/      # 本機安全防護與 API 整合測試（WebApplicationFactory）
+│  └─ WindowsTool.AI.Tests/       # Phase 4 才建立（空的測試專案在新執行器下會被判定失敗）
 ├─ docs/
 │  ├─ PLAN.md                   # 本文件
 │  ├─ rule-schema.md
@@ -148,7 +149,9 @@ WindowsTool/
 │  └─ release.yml               # tag 觸發，三平台 publish + Release
 ├─ .vscode/launch.json
 ├─ Directory.Build.props        # 共用設定（Nullable, TreatWarningsAsErrors, LangVersion）
-├─ WindowsTool.sln
+├─ Directory.Packages.props     # 集中管理 NuGet 套件版本
+├─ global.json                  # 固定 SDK 版本、指定測試執行器
+├─ WindowsTool.sln              # 放在 repo 根目錄
 ├─ README.md
 └─ LICENSE
 ```
@@ -406,6 +409,12 @@ POST   /api/shell/open                   # { path } → 用預設程式開啟（
 - 驗證 `Host` header 只能是 `127.0.0.1:<port>` 或 `localhost:<port>`，防 DNS rebinding。
 - 不開 CORS。
 - 目的是**避免其他網頁或本機程式呼叫刪除 API**。
+- **實作細節（Phase 0 定案）**：
+  - Token 是 32 bytes 隨機值（base64url），以固定時間比較驗證；**不接受**放在 query string 的 token。
+  - 前端讀出 fragment 中的 token 後，存進 `sessionStorage`（只限該分頁），並從網址列移除。這樣重新整理頁面不會失效，關掉分頁就消失；程式重啟後舊 token 自動作廢。
+  - SSE 一律用 `fetch()` 串流讀取，不用 `EventSource`，因為 `EventSource` 無法帶 `Authorization` header。
+  - 所有回應都加上安全標頭：`Content-Security-Policy`（只允許 `'self'`）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`；`/api/*` 加上 `Cache-Control: no-store`。
+  - Vue 全域版在執行時編譯 template，需要在 CSP 的 `script-src` 加上 `'unsafe-eval'`；Phase 1 導入 Vue 時一併處理並記錄。
 
 ### 11.2 頁面
 1. **掃描**：選擇位置（輸入路徑 + 最近使用清單 + 磁碟清單）、條件表單、進度條。
@@ -638,7 +647,8 @@ dotnet publish src/WindowsTool.App -c Release -r win-x64 --self-contained true \
 - 一般平台可以從 ubuntu runner 交叉發佈；只有 Windows 專屬測試要在 windows runner 上跑。
 
 ### 16.3 本機開發與除錯
-- `WindowsTool.App/Properties/launchSettings.json`：固定 port（例如 5179）、`ASPNETCORE_ENVIRONMENT=Development`。開發模式下 session token 可以停用，或固定成 `dev`，並從磁碟讀取 wwwroot（hot reload）。
+- `WindowsTool.App/Properties/launchSettings.json`：`ASPNETCORE_ENVIRONMENT=Development`、`WindowsTool__Port=5179`。開發模式下 session token 固定為 `dev`（可用 `WindowsTool__DevToken` 改），並從磁碟讀取 wwwroot（改完重新整理即生效）；正式環境一律使用隨機 token 與隨機埠，並讀取 exe 內嵌的檔案。
+- 命令列參數：`--no-browser`（不自動開瀏覽器）、`--port <n>`（指定埠號）。
 - `.vscode/launch.json` 和 `tasks.json`：F5 啟動並自動開瀏覽器。
 - 測試資料：`tests/fixtures/` 提供腳本，產生假的目錄樹（含 node_modules、bin/obj、symlink、無權限目錄），**不要在真實的 C 槽上跑破壞性測試**。
 
@@ -651,6 +661,7 @@ dotnet publish src/WindowsTool.App -c Release -r win-x64 --self-contained true \
 - App 可以啟動，自動開瀏覽器，顯示 Hello 頁面；session token 和 Host 驗證生效。
 - CI（build + test）綠燈。
 - ✅ 驗收：`dotnet run` 能開頁；`dotnet publish -r win-x64` 產出的單一 exe 可以在**沒有安裝 .NET** 的 Windows 上執行。
+- **進度（2026-10-24）**：已完成，分支 `phase-0-scaffold`。單一 exe 約 48MB；在 PATH 中沒有 dotnet、`DOTNET_ROOT` 指向不存在路徑的環境下可正常執行。「全新、沒裝過 .NET 的機器」實測需另外在乾淨的 VM 上確認（CI 會產出 exe 供下載）。
 
 ### Phase 1｜掃描 + 唯讀 UI（2–3 天）
 - Scanner（一般模式）、進度 SSE、取消功能、記憶體控管。
