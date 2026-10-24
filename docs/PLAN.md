@@ -323,6 +323,28 @@ WindowsTool/
   - Hardlink（例如 WinSxS）：大小會重複計算，相關規則的 reason 要加註說明。
   - 網路磁碟：允許掃描，但 UI 要提示速度較慢。
 
+### 9.3 Phase 1 實作決策（2026-10-24）
+- **走訪器** `ParallelWalker`（`Core/FileSystem/`）：`FileSystemEnumerable<T>` + `Channel` work-queue，平行度預設為 CPU 核心數（2–16），網路路徑為 2。所有判斷在 `ShouldIncludePredicate` 內完成，不符合條件的項目不配置字串。
+  - 取消：每個目錄開始前，以及目錄內每 256 個項目檢查一次（`Channel.ReadAllAsync` 只在需要等待時才檢查取消，不能只靠它）。
+  - Reparse point：用 `FileSystemInfo.LinkTarget` 判斷，只有 Symlink / Junction 視為連結（不跟進、大小計 0）；帶雲端屬性的 reparse point（OneDrive）照常走訪並標記 `cloudPlaceholder`。
+- **記憶體控管**：目錄全部保留；檔案 ≥ 1 MB（可調）一律保留，較小的只保留每個目錄前 **3** 大，其餘計入「其他 N 個小檔案」。每個節點不存完整路徑（需要時沿 Parent 組出），掃描結束後子清單轉成剛好大小的陣列。
+- **ID**：每次掃描內以 BFS 順序配發的整數，而不是路徑 hash（較省記憶體，查詢用陣列索引）。
+- **extStats**：每個目錄保留前 8 名副檔名（其餘歸為「其他」）；子樹統計在查詢時由各目錄加總，是近似值。
+- **目錄的修改時間**：另外計算 `newestWriteUtc`（整個子樹中最新的檔案），給「N 天未修改」篩選和 Phase 2 的 `minAgeDays` 使用。
+- **與原計畫的差異**：
+  - 掃描器不提供「深度上限」（會讓大小少算）；深度上限只用在快速搜尋。
+  - 「排除 glob」延到 Phase 2 有 `GlobMatcher` 時再做；Phase 1 先提供「略過的資料夾名稱」（預設 `System Volume Information`）。
+  - `sizeOnDisk` 尚未實作（需要每個檔案多一次系統呼叫），列為之後的選項。
+  - 最近使用的位置存在瀏覽器的 `localStorage`（只是個人的便利功能），不寫入 `settings.json`。
+  - 記憶體中最多保留最近 3 次掃描結果。
+- **實測（本機 Windows 11，NVMe SSD）**：
+
+  | 位置 | 檔案 / 資料夾 | 時間 | 備註 |
+  |---|---|---|---|
+  | `C:\Program Files` | 118,611 / 19,014 | 0.9 秒（暖快取 0.24 秒）| 檔案數與 robocopy `/L /E /XJ` 完全一致；位元組相差 478 bytes（兩次執行之間有檔案變動）；6 個無法讀取的目錄與 robocopy 的 FAILED 數一致 |
+  | `C:\Users\<user>` | 639,054 / 113,916 | 1.9 秒 | |
+  | `C:\` | 1,297,873 / 357,469 | 87 秒（冷快取）／ 6–10 秒（暖快取）| 受管理記憶體約 164 MB（每個目錄約 480 bytes）；清單查詢 50–390 ms |
+
 ---
 
 ## 9A. 快速檔案搜尋（FileSearch）
@@ -434,8 +456,10 @@ GET    /api/system/info                  # OS、權限、磁碟清單、資料�
 POST   /api/scans                        # { root, options } → { scanId }
 GET    /api/scans/{id}/events            # SSE 進度
 DELETE /api/scans/{id}                   # 取消
-GET    /api/scans/{id}/items?parentId=&sort=&minSize=&risk=&category=&q=
-GET    /api/scans/{id}/items/{itemId}
+GET    /api/scans/{id}                   # 狀態 + 進度 + 完成後的摘要（Phase 1 新增）
+GET    /api/scans/{id}/items?parentId=&flat=&kind=&minSize=&q=&ext=&olderThanDays=&sort=&order=&offset=&limit=
+                                         # Phase 2 再加 risk=&category=
+GET    /api/scans/{id}/items/{itemId}    # 項目 + 祖先路徑 + 子樹 extStats
 
 # 快速搜尋：見 9A.4（/api/search、/api/shell/*）
 
@@ -667,6 +691,7 @@ dotnet publish src/WindowsTool.App -c Release -r win-x64 --self-contained true \
 - Scanner（一般模式）、進度 SSE、取消功能、記憶體控管。
 - 結果頁的樹狀和表格、排序、篩選、項目詳情。
 - ✅ 驗收：掃描一個含 10 萬個以上檔案的資料夾能正確彙總大小（和 OS 回報的誤差在合理範圍內）；symlink 不重複計算；無權限路徑有標記並計數；可以中途取消。
+- **進度（2026-10-24）**：已完成，分支 `phase-1-scan`。驗收結果見 9.3 的實測表；symlink / junction、無權限目錄、取消都有自動化測試（在 fixture 目錄上），取消在 UI 上實測約 0.2 秒生效。
 
 ### Phase 1.5｜快速檔案搜尋（1–2 天）
 - `SearchQuery`、`NameMatcher`（子字串 / 萬用字元 / 正規表示式）、`FileSearcher`（使用 Phase 1 的 `ParallelWalker`）。

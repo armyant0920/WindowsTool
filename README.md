@@ -10,7 +10,7 @@
 
 完全離線可用。打包成單一執行檔，不需要安裝 .NET。
 
-> 目前進度：**Phase 0（專案骨架）**。完整計畫見 [docs/PLAN.md](docs/PLAN.md)。
+> 目前進度：**Phase 1（磁碟掃描 + 唯讀結果頁）**。完整計畫見 [docs/PLAN.md](docs/PLAN.md)。
 
 ## 使用方式
 

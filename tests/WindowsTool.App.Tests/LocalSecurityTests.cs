@@ -95,7 +95,25 @@ public sealed class LocalSecurityTests(AppFactory factory) : IClassFixture<AppFa
         response.Headers.GetValues("X-Content-Type-Options").ShouldContain("nosniff");
         response.Headers.GetValues("X-Frame-Options").ShouldContain("DENY");
         response.Headers.GetValues("Referrer-Policy").ShouldContain("no-referrer");
-        response.Headers.GetValues("Content-Security-Policy").Single().ShouldContain("default-src 'self'");
+        var csp = response.Headers.GetValues("Content-Security-Policy").Single();
+        csp.ShouldContain("default-src 'self'");
+        csp.ShouldNotContain("unsafe-inline");
+        csp.ShouldContain("frame-ancestors 'none'");
+    }
+
+    [Theory]
+    [InlineData("/lib/vue.global.prod.js", "text/javascript")]
+    [InlineData("/js/main.js", "text/javascript")]
+    [InlineData("/js/components/result-view.js", "text/javascript")]
+    [InlineData("/app.css", "text/css")]
+    public async Task Front_end_assets_are_embedded(string path, string mediaType)
+    {
+        using var client = factory.CreateLocalClient();
+
+        using var response = await client.GetAsync(new Uri(path, UriKind.Relative), Ct);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        response.Content.Headers.ContentType?.MediaType.ShouldBe(mediaType);
     }
 
     [Fact]
